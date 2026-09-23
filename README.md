@@ -36,7 +36,7 @@ own.
 | JDK (JVM Clojure) | **25** | 25.0.3 (Temurin) | `org.babashka/ffi` needs JDK 25+. On 21.0.11 it fails with `ClassNotFoundException: java.lang.classfile.ClassBuilder`. Run with `--enable-native-access=ALL-UNNAMED` (the `:test` alias sets it). Without it, JDK 25 warns that native calls "will be blocked in a future release". |
 | `org.babashka/ffi` (JVM only) | 0.1.2 | 0.1.2 | Built into bb and nbb. Experimental. |
 | Clojure CLI | — | 1.12.6 | |
-| babashka | **1.13.220** | 1.13.223 | `babashka.ffi` was added in 1.13.220. |
+| babashka | **1.13.220** | 1.13.223, 1.13.224 | `babashka.ffi` was added in 1.13.220. **On Linux use the dynamically linked build** (`babashka-<v>-linux-amd64.tar.gz`). The static build (`…-static`), which `DeLaGuardo/setup-clojure` installs on Linux, cannot load shared libraries at all: `cannot load library`, even by absolute path. |
 | nbb | **1.6.213** | 1.6.213 | `babashka.ffi` built in. |
 | Node.js (nbb) | **26.1** | 26.9.0 | nbb's FFI uses Node's built-in `node:ffi`. It is experimental and prints an `ExperimentalWarning`. |
 | libsodium.js (WASM) | 0.8.4 **sumo** | 0.8.4 | The *standard* 0.8.4 build has no HMAC, SHA-256 or HKDF. 0.8.4 does not export HKDF, so the tests implement it on HMAC (see the docs). |

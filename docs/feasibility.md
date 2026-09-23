@@ -127,6 +127,23 @@ covers this. Any future binding needs the same discipline.
   Import it with
   `clj-kondo --lint "$(clojure -Spath)" --dependencies --copy-configs --skip-lint`.
 
+### Linux CI findings (2026-09-23) [verified]
+
+These surfaced when signet's CI first ran the libsodium backend on Linux:
+
+- **Ubuntu 24.04 and 25.10 ship libsodium 1.0.18**, which has no HKDF.
+  CI builds 1.0.22 from source (SHA-256 pinned; byte-identical from
+  download.libsodium.org and the GitHub release). `sodium.core` now
+  refuses anything older than 1.0.19 at load, with a clear error.
+- **The statically linked bb cannot load native libraries.**
+  `babashka.ffi/load-library` fails with `cannot load library`, even for
+  `/usr/local/lib/libsodium.so.26` by absolute path. `DeLaGuardo/setup-clojure`
+  installs that static build on Linux. The dynamically linked build
+  (`babashka-<v>-linux-amd64.tar.gz`) works. The JVM, being dynamically
+  linked itself, was never affected.
+- **Fresh machines need `clojure -P` before `clojure -T:build install`:**
+  tools.build's basis did not download `org.babashka/ffi` itself.
+
 ## libsodium.js (browser, and Node without native libsodium)
 
 - libsodium.js 0.8.4 (released 2026-04-19) bundles libsodium 1.0.22

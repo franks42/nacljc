@@ -53,6 +53,30 @@
 (when (neg? (-sodium-init))
   (throw (ex-info "sodium_init failed" {})))
 
+(def minimum-version
+  "Oldest libsodium release this binding supports: 1.0.19 added HKDF
+   (crypto_kdf_hkdf_sha256_*)."
+  [1 0 19])
+
+(defn version>=?
+  "Is release version string s (e.g. \"1.0.22\") at least min, a vector
+   such as [1 0 19]? Numeric, not lexicographic (1.0.9 < 1.0.19). Pure;
+   false for an unparseable string."
+  [s min]
+  (if-let [[_ a b c] (and (string? s) (re-matches #"(\d+)\.(\d+)\.(\d+).*" s))]
+    (not (neg? (compare [(parse-long a) (parse-long b) (parse-long c)] min)))
+    false))
+
+;; Fail at load, clearly, rather than at the first HKDF call with an
+;; obscure missing-symbol error. Ubuntu 24.04 / 25.10 ship 1.0.18.
+(let [v (version-string)]
+  (when-not (version>=? v minimum-version)
+    (throw (ex-info (str "libsodium " v " is too old: sodium.cljc needs >= "
+                         (apply str (interpose "." minimum-version))
+                         " (HKDF). Debian/Ubuntu packages are 1.0.18; install a newer"
+                         " libsodium (e.g. Homebrew, or build from download.libsodium.org).")
+                    {:type ::libsodium-too-old :found v :minimum minimum-version}))))
+
 (defmacro ^:private with-arena
   "Like with-open over a confined arena; nbb has no with-open."
   [[a] & body]
