@@ -1,11 +1,11 @@
-# sodium.cljc
+# nacljc
 
 Proof of concept: **libsodium as one crypto engine for Clojure on every
 runtime**, with one binding source file.
 
 - **JVM Clojure, babashka and nbb** call native libsodium through
   [`babashka.ffi`](https://github.com/babashka/ffi). The same
-  `src/sodium/core.cljc` runs unchanged on all three.
+  `src/nacljc/core.cljc` runs unchanged on all three.
 - **Browsers (Scittle)** use [libsodium.js](https://github.com/jedisct1/libsodium.js),
   libsodium compiled to WebAssembly.
 
@@ -14,12 +14,24 @@ vectors, and they reproduce the outputs of signet's current JCA backend, so
 moving signet onto libsodium would change no signature, key or ciphertext.
 
 **signet runs on it unchanged.** A drop-in `signet.impl.jvm` built on
-`sodium.core` (`integration/signet-shim`) passes signet's own, unmodified
+`nacljc.core` (`integration/signet-shim`) passes signet's own, unmodified
 suite:
 
 - JVM: 102 tests / 436 assertions, identical to signet's JCA backend.
 - babashka: 93 / 415, which is every test except secp256k1 (Bouncy Castle
   cannot load on bb). With its own JCA backend, signet gets 16 errors on bb.
+
+## The name
+
+**nacljc** is NaCl (sodium chloride, and Bernstein, Lange and Schwabe's
+Networking and Cryptography library) plus cljc. It is **not a binding to
+the original NaCl C library.** It binds [libsodium](https://libsodium.org),
+NaCl's maintained successor. It is aligned with NaCl's design: a few
+well-chosen primitives, hard to misuse, and the same Curve25519, Ed25519
+and Poly1305 lineage. But it also exposes libsodium primitives that NaCl
+never had, such as HKDF-SHA-256 and IETF ChaCha20-Poly1305. The repo was
+called `sodium.cljc` until 2026-09-23. It was renamed because Clojars'
+`com.degel/sodium` already ships a `sodium.core` namespace.
 
 Status: **experimental research code**, not a library yet.
 [`docs/feasibility.md`](docs/feasibility.md) has the findings, the evidence
@@ -32,7 +44,7 @@ own.
 
 | Component | Minimum | Tested | Notes |
 |---|---|---|---|
-| libsodium (native) | **1.0.19** | 1.0.22 (Homebrew) | 1.0.19 added HKDF; `sodium.core` checks the version at load and throws `::libsodium-too-old` for anything older. macOS: `brew install libsodium`. On Linux, check your distribution's version with `pkg-config --modversion libsodium`, since some ship an older one. |
+| libsodium (native) | **1.0.19** | 1.0.22 (Homebrew) | 1.0.19 added HKDF; `nacljc.core` checks the version at load and throws `::libsodium-too-old` for anything older. macOS: `brew install libsodium`. On Linux, check your distribution's version with `pkg-config --modversion libsodium`, since some ship an older one. |
 | JDK (JVM Clojure) | **25** | 25.0.3 (Temurin) | `org.babashka/ffi` needs JDK 25+. On 21.0.11 it fails with `ClassNotFoundException: java.lang.classfile.ClassBuilder`. Run with `--enable-native-access=ALL-UNNAMED` (the `:test` alias sets it). Without it, JDK 25 warns that native calls "will be blocked in a future release". |
 | `org.babashka/ffi` (JVM only) | 0.1.2 | 0.1.2 | Built into bb and nbb. Experimental. |
 | Clojure CLI | — | 1.12.6 | |
@@ -57,7 +69,7 @@ bb test:jca       # random-input cross-check against signet's JCA backend (needs
 bb test:signet    # signet's own test suite: JCA oracle (JVM), libsodium (JVM), libsodium (bb)
                   #   (needs ../signet; also test:signet-jca / test:signet-jvm / test:signet-bb)
 bb test:all       # everything except test:jca and test:signet, plus lint and format
-bb install        # install com.github.franks42/sodium 0.1.0-SNAPSHOT into ~/.m2 (local only)
+bb install        # install com.github.franks42/nacljc 0.1.0-SNAPSHOT into ~/.m2 (local only)
 ```
 
 `bb install` builds a jar containing only `src/` (its pom depends on
@@ -74,18 +86,18 @@ Scittle and libsodium.js.
 ## Layout
 
 ```
-src/sodium/core.cljc          the binding (Ed25519, Ed25519->X25519, X25519, SHA-256,
+src/nacljc/core.cljc          the binding (Ed25519, Ed25519->X25519, X25519, SHA-256,
                               HMAC-SHA-256, ChaCha20-Poly1305 IETF, HKDF-SHA-256,
                               randombytes); fixed-size inputs are length-checked
-test/sodium/vectors.edn       RFC vectors + cross-platform vectors
-test/sodium/core_test.cljc    known-answer tests for JVM, bb and nbb
-test/sodium/jca_crosscheck.clj  libsodium vs signet's JCA on random inputs
+test/nacljc/vectors.edn       RFC vectors + cross-platform vectors
+test/nacljc/core_test.cljc    known-answer tests for JVM, bb and nbb
+test/nacljc/jca_crosscheck.clj  libsodium vs signet's JCA on random inputs
 test/wasm/check.cljs          libsodium.js on Node against the same vectors
 test/browser/index.html       Scittle page doing the same in a browser
 test/browser/run.mjs          Playwright runner for that page
 integration/signet-shim/signet/impl/jvm.clj
                               drop-in libsodium backend for signet (same ns, 16 fns)
-integration/sodium/signet_suite.clj
+integration/nacljc/signet_suite.clj
                               runs signet's unmodified tests; asserts which backend loaded
 docs/feasibility.md           findings and recommendation
 ```

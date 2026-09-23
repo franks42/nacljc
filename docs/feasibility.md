@@ -43,7 +43,7 @@ tag both match the RFC.
 
 ### Agreement with signet's JCA backend [verified]
 
-`test/sodium/jca_crosscheck.clj` feeds random inputs to libsodium and to
+`test/nacljc/jca_crosscheck.clj` feeds random inputs to libsodium and to
 `signet.impl.jvm`. The results are byte-identical for the seed-derived
 public key, the Ed25519 signature, the X25519 keys derived from Ed25519
 keys, the DH secret, ChaCha20-Poly1305 and HKDF. This holds on bb and on
@@ -57,9 +57,9 @@ trick fails on bb 1.13.223 with `No matching clause`.
 
 `integration/signet-shim/signet/impl/jvm.clj` is a drop-in replacement for
 signet's JCA backend. It has the same namespace and the same 16 functions,
-implemented on `sodium.core`. When it comes first on the classpath, signet
+implemented on `nacljc.core`. When it comes first on the classpath, signet
 uses libsodium without any change to signet's repo.
-`integration/sodium/signet_suite.clj` runs signet's own test namespaces and
+`integration/nacljc/signet_suite.clj` runs signet's own test namespaces and
 checks a `backend` marker var. If the wrong backend loaded it exits 2; this
 was checked by running the JCA configuration while expecting libsodium.
 
@@ -92,7 +92,7 @@ size of the buffer. The first version of the binding passed arrays through
 unchecked. Given a 32-byte array where the 64-byte secret key belongs, it
 returned a "signature" without error; given a 16-byte X25519 public key, it
 returned a "shared secret". Both were computed from memory past the end of
-the allocation. `sodium.core` now checks every fixed-size input and throws
+the allocation. `nacljc.core` now checks every fixed-size input and throws
 `::bad-length`. `verify?` returns false for a wrong-size signature or key,
 because both are untrusted input. `length-checks` in `core_test.cljc`
 covers this. Any future binding needs the same discipline.
@@ -133,7 +133,7 @@ These surfaced when signet's CI first ran the libsodium backend on Linux:
 
 - **Ubuntu 24.04 and 25.10 ship libsodium 1.0.18**, which has no HKDF.
   CI builds 1.0.22 from source (SHA-256 pinned; byte-identical from
-  download.libsodium.org and the GitHub release). `sodium.core` now
+  download.libsodium.org and the GitHub release). `nacljc.core` now
   refuses anything older than 1.0.19 at load, with a clear error.
 - **The statically linked bb cannot load native libraries.**
   `babashka.ffi/load-library` fails with `cannot load library`, even for

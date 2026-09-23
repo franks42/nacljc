@@ -1,6 +1,6 @@
-(ns sodium.signet-suite
+(ns nacljc.signet-suite
   "Runs signet's own, unmodified test suite and reports which backend
-   signet.impl.jvm resolved to. Usage: -m sodium.signet-suite <expected>
+   signet.impl.jvm resolved to. Usage: -m nacljc.signet-suite <expected>
    where <expected> is libsodium (shim ahead of signet's src on the
    classpath) or jca (signet's own JCA backend: the oracle run).
    Exits 1 on test failures, 2 if the wrong backend loaded."

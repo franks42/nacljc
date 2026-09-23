@@ -1,10 +1,16 @@
-# sodium.cljc — project guide
+# nacljc — project guide
 
 Research repo, created 2026-09-23. It tests whether **libsodium** can be the
 single crypto engine for Clojure on JVM, babashka, nbb and the browser.
-Public repo: https://github.com/franks42/sodium.cljc (created 2026-09-23;
+Public repo: https://github.com/franks42/nacljc (created 2026-09-23;
 no CI yet, and no release, since it is research code and not a published
 library).
+
+Renamed from `sodium.cljc` on 2026-09-23 (namespaces `sodium.*` → `nacljc.*`,
+coordinates `com.github.franks42/sodium` → `com.github.franks42/nacljc`),
+because Clojars' `com.degel/sodium` already ships `sodium.core`. It binds
+libsodium, not the original NaCl: aligned with NaCl's design, but not the
+same library (README "The name").
 
 Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
 `README.md` has the requirements table (minimum and tested versions).

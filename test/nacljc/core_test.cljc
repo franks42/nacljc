@@ -1,17 +1,17 @@
-(ns sodium.core-test
-  "Known-answer tests for sodium.core, on JVM Clojure, bb and nbb.
-   test/sodium/vectors.edn holds RFC vectors and cross-platform vectors
+(ns nacljc.core-test
+  "Known-answer tests for nacljc.core, on JVM Clojure, bb and nbb.
+   test/nacljc/vectors.edn holds RFC vectors and cross-platform vectors
    (fixed inputs where native libsodium, signet's JCA backend and
    libsodium.js agree). Run from the repo root."
   (:require [clojure.test :refer [deftest is testing]]
-            [sodium.core :as na]
+            [nacljc.core :as na]
             #?(:clj  [clojure.edn :as edn]
                :cljs [cljs.reader :as edn])
             #?(:cljs ["fs" :as fs])))
 
 (def vectors
-  (edn/read-string #?(:clj  (slurp "test/sodium/vectors.edn")
-                      :cljs (str (fs/readFileSync "test/sodium/vectors.edn")))))
+  (edn/read-string #?(:clj  (slurp "test/nacljc/vectors.edn")
+                      :cljs (str (fs/readFileSync "test/nacljc/vectors.edn")))))
 
 ;; ---- portable byte helpers: byte[] on the JVM/bb, Int8Array on nbb ----
 
@@ -108,7 +108,7 @@
 (defn- bad-length? [f]
   (try (f) false
        (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
-         (= :sodium.core/bad-length (:type (ex-data e))))))
+         (= :nacljc.core/bad-length (:type (ex-data e))))))
 
 (deftest length-checks
   (let [b #(bytes-from (repeat % 1))

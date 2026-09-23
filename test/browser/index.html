@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>sodium.cljc — Scittle + libsodium.js</title>
+  <title>nacljc — Scittle + libsodium.js</title>
   <!--
     libsodium.js single-file browser build (WASM + JS fallback in one file),
     loaded with a plain script tag — no bundler, no import map. The URL can
@@ -112,7 +112,7 @@
     (log "DONE " @fails " failed")))
 
 (-> (js/Promise.all #js [js/sodiumReady
-                         (-> (js/fetch "/test/sodium/vectors.edn") (.then #(.text %)))])
+                         (-> (js/fetch "/test/nacljc/vectors.edn") (.then #(.text %)))])
     (.then (fn [[s txt]] (run s (edn/read-string txt))))
     (.catch (fn [e] (log "DONE error " (.-message e)))))
 </script>

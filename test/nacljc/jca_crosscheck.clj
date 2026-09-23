@@ -1,8 +1,8 @@
-(ns sodium.jca-crosscheck
+(ns nacljc.jca-crosscheck
   "Random-input cross-check: libsodium (via babashka.ffi) vs signet's JCA
    backend (signet.impl.jvm) on identical inputs. JVM and bb only; needs
    ../signet/src on the classpath (bb test:jca)."
-  (:require [sodium.core :as na]
+  (:require [nacljc.core :as na]
             [signet.impl.jvm :as jca]))
 
 (defn- same? [a b] (java.util.Arrays/equals ^bytes a ^bytes b))

@@ -1,5 +1,5 @@
 (ns check
-  "libsodium.js (WASM, libsodium-wrappers-sumo) against test/sodium/vectors.edn.
+  "libsodium.js (WASM, libsodium-wrappers-sumo) against test/nacljc/vectors.edn.
    Shows the browser/Node-WASM engine gives the same bytes as native
    libsodium. 0.8.4 does not export HKDF (added upstream 2026-07-10, not yet
    released), so hkdf below is RFC 5869 built on crypto_auth_hmacsha256.
@@ -9,7 +9,7 @@
             [cljs.reader :as reader]
             [promesa.core :as p]))
 
-(def vectors (reader/read-string (str (fs/readFileSync "../sodium/vectors.edn"))))
+(def vectors (reader/read-string (str (fs/readFileSync "../nacljc/vectors.edn"))))
 (def fails (atom 0))
 (defn- check [label ok]
   (when-not ok (swap! fails inc))

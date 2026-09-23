@@ -1,6 +1,6 @@
 (ns signet.impl.jvm
   "Drop-in replacement for signet's JCA backend (signet/src/signet/impl/jvm.clj),
-   implemented on libsodium via sodium.core. Same namespace, same 16
+   implemented on libsodium via nacljc.core. Same namespace, same 16
    functions, same contracts. Put this directory ahead of signet's src on
    the classpath and signet runs on libsodium unchanged. Integration test
    only; signet's repo is not modified.
@@ -8,10 +8,10 @@
    Differences worth knowing:
    - Seed -> public key uses crypto_sign_seed_keypair instead of the JCA
      'fake SecureRandom' trick, so it also works on babashka.
-   - Fixed-size inputs are length-checked (sodium.core); a wrong size throws
+   - Fixed-size inputs are length-checked (nacljc.core); a wrong size throws
      ex-info where JCA threw its own exception types. signet's tests only
      assert on Exception / ExceptionInfo, so both satisfy them."
-  (:require [sodium.core :as na]))
+  (:require [nacljc.core :as na]))
 
 (def backend
   "Marker proving which backend is loaded (signet's JCA ns has no such var)."

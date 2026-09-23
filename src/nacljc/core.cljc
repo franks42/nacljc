@@ -1,4 +1,4 @@
-(ns sodium.core
+(ns nacljc.core
   "Thin libsodium binding over babashka.ffi. One source file for JVM
    Clojure (org.babashka/ffi, JDK 25+), babashka (built in) and nbb
    (built in, Node 26+ node:ffi).
@@ -71,7 +71,7 @@
 ;; obscure missing-symbol error. Ubuntu 24.04 / 25.10 ship 1.0.18.
 (let [v (version-string)]
   (when-not (version>=? v minimum-version)
-    (throw (ex-info (str "libsodium " v " is too old: sodium.cljc needs >= "
+    (throw (ex-info (str "libsodium " v " is too old: nacljc needs >= "
                          (apply str (interpose "." minimum-version))
                          " (HKDF). Debian/Ubuntu packages are 1.0.18; install a newer"
                          " libsodium (e.g. Homebrew, or build from download.libsodium.org).")

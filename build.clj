@@ -1,9 +1,9 @@
 (ns build
-  "Build script for sodium.cljc — LOCAL installs only.
+  "Build script for nacljc — LOCAL installs only.
 
    Usage:
-     clojure -T:build jar      ; target/sodium.jar
-     clojure -T:build install  ; install to ~/.m2 as com.github.franks42/sodium 0.1.0-SNAPSHOT
+     clojure -T:build jar      ; target/nacljc.jar
+     clojure -T:build install  ; install to ~/.m2 as com.github.franks42/nacljc 0.1.0-SNAPSHOT
      clojure -T:build clean
 
    There is deliberately no deploy: this is research code. The snapshot
@@ -12,10 +12,10 @@
    consumers keep using the old jar until you do."
   (:require [clojure.tools.build.api :as b]))
 
-(def lib 'com.github.franks42/sodium)
+(def lib 'com.github.franks42/nacljc)
 (def version "0.1.0-SNAPSHOT")
 (def class-dir "target/classes")
-(def jar-file "target/sodium.jar")
+(def jar-file "target/nacljc.jar")
 ;; :root nil keeps org.clojure/clojure out of the pom; the pom lists only
 ;; this project's :deps (org.babashka/ffi, needed on the JVM).
 (def basis (delay (b/create-basis {:project "deps.edn" :root nil})))
@@ -32,14 +32,14 @@
                 :basis     @basis
                 :src-dirs  ["src"]
                 :pom-data  [[:description "libsodium for Clojure on JVM, babashka and nbb via babashka.ffi (research)"]
-                            [:url "https://github.com/franks42/sodium.cljc"]
+                            [:url "https://github.com/franks42/nacljc"]
                             [:licenses
                              [:license
                               [:name "EPL-2.0"]
                               [:url "https://www.eclipse.org/legal/epl-2.0/"]]]
                             [:scm
-                             [:url "https://github.com/franks42/sodium.cljc"]
-                             [:connection "scm:git:https://github.com/franks42/sodium.cljc.git"]]]})
+                             [:url "https://github.com/franks42/nacljc"]
+                             [:connection "scm:git:https://github.com/franks42/nacljc.git"]]]})
   (b/jar {:class-dir class-dir :jar-file jar-file})
   (println "Created" jar-file))
 
