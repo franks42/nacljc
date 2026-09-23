@@ -2,7 +2,9 @@
 
 Research repo, created 2026-09-23. It tests whether **libsodium** can be the
 single crypto engine for Clojure on JVM, babashka, nbb and the browser.
-There is no GitHub remote yet; the user plans to make this a repo later.
+Public repo: https://github.com/franks42/sodium.cljc (created 2026-09-23;
+no CI yet, and no release, since it is research code and not a published
+library).
 
 Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
 `README.md` has the requirements table (minimum and tested versions).
