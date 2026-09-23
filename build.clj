@@ -17,8 +17,15 @@
 (def class-dir "target/classes")
 (def jar-file "target/nacljc.jar")
 ;; :root nil keeps org.clojure/clojure out of the pom; the pom lists only
-;; this project's :deps (org.babashka/ffi, needed on the JVM).
-(def basis (delay (b/create-basis {:project "deps.edn" :root nil})))
+;; this project's :deps (org.babashka/ffi, needed on the JVM). But the root
+;; deps.edn is also where Maven Central and Clojars are defined, so they are
+;; added back: without them the basis cannot download anything, and a build
+;; on a fresh machine fails with "Could not find artifact".
+(def basis
+  (delay (b/create-basis {:project "deps.edn"
+                          :root    nil
+                          :extra   {:mvn/repos {"central" {:url "https://repo1.maven.org/maven2/"}
+                                                "clojars" {:url "https://repo.clojars.org/"}}}})))
 
 (defn clean [_]
   (b/delete {:path "target"}))
