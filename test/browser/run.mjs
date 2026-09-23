@@ -6,6 +6,8 @@
 //   lib — optional libsodium.js browser build: a URL, or a local file path
 //         (served under /local-lib/). Default: jsdelivr, libsodium.js 0.8.4.
 // Prerequisite (one-time): npm install && npx playwright install chromium
+// Or set CHROME_PATH to an installed Chrome/Chromium to skip Playwright's
+// browser download (CI does this: the download stalled on runners).
 
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -38,7 +40,10 @@ try {
   const base = `http://127.0.0.1:${server.address().port}`;
   const lib = localLib ? `${base}/local-lib/sodium.js` : libArg;
   const url = `${base}/test/browser/index.html` + (lib ? `?lib=${encodeURIComponent(lib)}` : "");
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({
+    headless: true,
+    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
+  });
   const page = await browser.newPage();
   const done = new Promise(r => {
     page.on("console", m => {

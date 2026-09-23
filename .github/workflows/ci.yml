@@ -10,8 +10,8 @@ name: ci
 #   linux  libsodium 1.0.22 built from a checksum-pinned tarball (Ubuntu's
 #          package is 1.0.18, no HKDF) and the dynamically linked bb (the
 #          static build cannot load native libraries); the same checks, plus
-#          Scittle + libsodium.js in headless Chromium. (On macOS runners
-#          Playwright's Chromium install hung after the download, 2026-09-23.)
+#          Scittle + libsodium.js in the runner's headless Chrome
+#          (Playwright's browser download stalled on both runner OSes).
 
 on:
   push:
@@ -171,8 +171,12 @@ jobs:
           (cd test/wasm && npm ci)
           bb test:wasm
 
-      - name: Scittle + libsodium.js in headless Chromium
+      # The runner's preinstalled Chrome: Playwright's own browser download
+      # stalled at 0% (and, on macOS, after 100%) on 2026-09-23.
+      - name: Scittle + libsodium.js in headless Chrome
         timeout-minutes: 10
         run: |
-          (cd test/browser && npm ci && npx playwright install --with-deps chromium)
+          (cd test/browser && npm ci)
+          export CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable)"
+          "$CHROME_PATH" --version
           bb test:browser
