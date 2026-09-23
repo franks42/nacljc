@@ -1,7 +1,8 @@
 # nacljc
 
-Proof of concept: **libsodium as one crypto engine for Clojure on every
-runtime**, with one binding source file.
+**libsodium as one crypto engine for Clojure on every runtime**, with one
+binding source file, hardened at the C boundary (see "Memory and type
+safety").
 
 - **JVM Clojure, babashka and nbb** call native libsodium through
   [`babashka.ffi`](https://github.com/babashka/ffi). The same
@@ -17,9 +18,11 @@ moving signet onto libsodium would change no signature, key or ciphertext.
 `nacljc.core` (`integration/signet-shim`) passes signet's own, unmodified
 suite:
 
-- JVM: 102 tests / 436 assertions, identical to signet's JCA backend.
-- babashka: 93 / 415, which is every test except secp256k1 (Bouncy Castle
+- JVM: 105 tests / 500 assertions, identical to signet's JCA backend.
+- babashka: 95 / 476, which is every test except secp256k1 (Bouncy Castle
   cannot load on bb). With its own JCA backend, signet gets 16 errors on bb.
+
+signet itself now ships this backend as `signet.impl.sodium`.
 
 ## The name
 
@@ -33,9 +36,126 @@ never had, such as HKDF-SHA-256 and IETF ChaCha20-Poly1305. The repo was
 called `sodium.cljc` until 2026-09-23. It was renamed because Clojars'
 `com.degel/sodium` already ships a `sodium.core` namespace.
 
-Status: **experimental research code**, not a library yet.
-[`docs/feasibility.md`](docs/feasibility.md) has the findings, the evidence
-and the open questions.
+Status: **pre-release.** The API below is what 0.1.0 will ship.
+[`docs/feasibility.md`](docs/feasibility.md) has the research findings and
+the evidence.
+
+## API
+
+Everything is in `nacljc.core`. Byte arrays in and out: `byte[]` on the JVM
+and bb. On nbb, `Int8Array` or `Uint8Array` in, and `Int8Array` out.
+
+| Function | Inputs, sizes in bytes | Returns |
+|---|---|---|
+| `(ed25519-public-key seed)` | seed 32 | public key 32 |
+| `(ed25519-sign seed msg)` | seed 32, msg any | signature 64, deterministic |
+| `(ed25519-verify? pk msg sig)` | pk 32, msg any, sig 64 | boolean; **never throws** for a bad `pk` or `sig` (untrusted input) |
+| `(ed25519->x25519-public-key pk)` | Ed25519 public key 32 | X25519 public key 32 |
+| `(ed25519->x25519-secret-key seed)` | Ed25519 seed 32 | X25519 secret key 32 |
+| `(x25519 sk pk)` | our secret key 32, their public key 32 | shared secret 32 |
+| `(x25519-public-key sk)` | secret key 32 | public key 32 |
+| `(chacha20-poly1305-encrypt k nonce pt aad)` | key 32, nonce 12, plaintext, aad (nil = none) | ciphertext ‖ 16-byte tag |
+| `(chacha20-poly1305-decrypt k nonce ct aad)` | key 32, nonce 12, ciphertext ≥ 16, aad | plaintext |
+| `(hkdf-sha-256 ikm salt info len)` | salt and info may be nil (empty); len 1..8160 | `len` bytes (RFC 5869) |
+| `(hmac-sha-256 k data)` | key of any length | 32 |
+| `(sha-256 data)` | | 32 |
+| `(random-bytes n)` | n ≥ 0 | n bytes from libsodium's CSPRNG |
+| `(memzero! bs)` | byte array | nil; overwrites `bs` with zeros |
+| `(constant-time-equal? a b)` | two byte arrays | boolean; constant-time for equal lengths |
+| `(libsodium-version)`, `minimum-libsodium-version` | | `"1.0.22"`, `[1 0 19]` |
+
+Ed25519 secret keys are **32-byte seeds**. libsodium's 64-byte secret key
+(seed ‖ public key) never leaves native memory; take its first 32 bytes
+if you have one.
+
+Errors are `ex-info` with a `:type`:
+
+| `:type` | When |
+|---|---|
+| `:nacljc.core/bad-input` | an input is not a byte array, or a count is not an integer |
+| `:nacljc.core/bad-length` | a fixed-size input has the wrong size, or a count is out of range |
+| `:nacljc.core/auth-failed` | decryption failed: wrong key, nonce or aad, or tampered ciphertext |
+| `:nacljc.core/low-order-point` | `x25519` with a small-order public key (the shared secret would be all zeros) |
+| `:nacljc.core/invalid-public-key` | `ed25519->x25519-public-key` with a point that is not on the curve or has small order |
+| `:nacljc.core/call-failed` | any other non-zero libsodium return code |
+| `:nacljc.core/library-not-found`, `not-libsodium`, `libsodium-too-old`, `init-failed` | at load time (see below) |
+
+Error data describes types and sizes, **never contents**, since they may be
+secret.
+
+## Memory and type safety
+
+`nacljc.core` is the line between Clojure, where a wrong value gives an
+exception, and C, where it reads or writes the wrong memory. C trusts every
+pointer and length, so everything is settled on the Clojure side first.
+
+- **Types are checked** before any native memory is touched. A string, a
+  vector, an `int[]`, or on nbb a plain JS array or `Int16Array`, is
+  `::bad-input`, never a pointer to the wrong bytes.
+- **Sizes are checked.** Every fixed-size input is checked, and every
+  length passed to C is taken from the array itself, never from the caller.
+- **Rejected input never reaches C.** The tests assert that each rejected
+  call allocates no native memory at all. A missing guard whose C call
+  still happens to return the right answer, such as `verify?` over-reading
+  a short signature, is caught this way.
+- **Every native buffer is wiped.** Each call copies its inputs into a
+  fresh confined arena, calls C, and copies the results out. Every buffer
+  in the arena is then zeroed with `sodium_memzero` before the arena is
+  released, on success and on error. The tests audit every allocation,
+  wipe and close, and check that the wipe really zeroes memory.
+- **Nothing escapes and nothing is shared.** No pointer outlives its call.
+  Results are fresh arrays, and inputs are never written to.
+- **Ed25519 signing takes the seed.** A 64-byte secret key whose
+  public-key half does not match its seed makes Ed25519 leak the private
+  scalar: libsodium hashes that half into the signature without checking
+  it. nacljc derives the full key from the seed inside native memory for
+  each signature, so the mismatch cannot happen.
+- **Every return code is checked**, and each failure has its own type.
+- **The raw C bindings are private**, and a test pins the public API to
+  exactly the table above.
+
+Each of these checks was shown to bite by removing it and watching the
+tests fail. Without the count check, `(random-bytes -1)` does not throw at
+all: it aborts the whole process inside libsodium.
+
+What stays with the caller:
+
+- **Clojure-side arrays are yours.** Arrays you pass in and get back live
+  on the Clojure heap. They are not locked in memory, and the JVM's moving
+  garbage collector may already have copied them. Call `memzero!` on
+  secrets when you are done.
+- **Raw bytes carry no key type.** An Ed25519 public key and an X25519
+  public key are both 32 bytes, so no length check can tell them apart. A
+  typed layer above nacljc must keep them apart; signet's key records do.
+- **Nonces are your responsibility.** `chacha20-poly1305-encrypt` takes a
+  caller-chosen nonce. Never reuse one with the same key. Higher-level
+  APIs such as signet's box hide nonces entirely.
+- **Native buffers are not `mlock`ed.** A buffer could reach swap during
+  the microseconds of a call.
+
+## Loading libsodium
+
+libsodium loads when `nacljc.core` loads. Without configuration it is
+looked for in these places:
+
+- **macOS:** Homebrew on Apple silicon and Intel, then MacPorts.
+- **Linux:** `libsodium.so.26`, then `.so.23`, then `.so`, through the
+  system search path.
+
+To use exactly one library, set a path:
+
+```bash
+NACLJC_LIBSODIUM=/opt/libsodium/lib/libsodium.so.26 bb …        # any runtime
+clojure -J-Dnacljc.libsodium=/opt/libsodium/lib/libsodium.dylib …  # JVM (bb: -Dnacljc.libsodium=…)
+```
+
+- The system property wins over the environment variable. An empty value
+  counts as unset.
+- A configured path is the only one tried; there is no fallback.
+- These cases fail at load, loudly:
+  - A missing library: `::library-not-found`, listing the paths tried.
+  - A library that isn't libsodium: `::not-libsodium`.
+  - A libsodium older than 1.0.19: `::libsodium-too-old`.
 
 ## Requirements
 
@@ -62,13 +182,14 @@ own.
 bb test:bb        # vector tests on babashka
 bb test:jvm       # vector tests on JVM Clojure (JDK 25+)
 bb test:nbb       # vector tests on nbb (Node 26+)
+bb test:loading   # library loading in fresh processes, on bb, nbb and the JVM
 bb test:wasm      # libsodium.js on Node        (first: cd test/wasm && npm install)
 bb test:browser   # Scittle + libsodium.js in headless Chromium
                   # (first: cd test/browser && npm install; optional arg = a libsodium.js build URL or path)
 bb test:jca       # random-input cross-check against signet's JCA backend (needs ../signet)
 bb test:signet    # signet's own test suite: JCA oracle (JVM), libsodium (JVM), libsodium (bb)
                   #   (needs ../signet; also test:signet-jca / test:signet-jvm / test:signet-bb)
-bb test:all       # everything except test:jca and test:signet, plus lint and format
+bb test:all       # everything except test:jca and test:signet, plus library loading, lint and format
 bb install        # install com.github.franks42/nacljc 0.1.0-SNAPSHOT into ~/.m2 (local only)
 ```
 
@@ -86,11 +207,10 @@ Scittle and libsodium.js.
 ## Layout
 
 ```
-src/nacljc/core.cljc          the binding (Ed25519, Ed25519->X25519, X25519, SHA-256,
-                              HMAC-SHA-256, ChaCha20-Poly1305 IETF, HKDF-SHA-256,
-                              randombytes); fixed-size inputs are length-checked
+src/nacljc/core.cljc          the binding (API above): checks, scratch arenas, wiping
 test/nacljc/vectors.edn       RFC vectors + cross-platform vectors
-test/nacljc/core_test.cljc    known-answer tests for JVM, bb and nbb
+test/nacljc/core_test.cljc    known answers, typed errors, hygiene audit (JVM, bb, nbb)
+test/loading/run.clj          library-loading checks, driving test/loading/child.cljc
 test/nacljc/jca_crosscheck.clj  libsodium vs signet's JCA on random inputs
 test/wasm/check.cljs          libsodium.js on Node against the same vectors
 test/browser/index.html       Scittle page doing the same in a browser

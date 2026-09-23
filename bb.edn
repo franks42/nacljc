@@ -16,6 +16,9 @@
              :task (shell "nbb" "-cp" "src:test" "-e"
                           "(require 'cljs.test 'nacljc.core-test) (cljs.test/run-tests 'nacljc.core-test)")}
 
+  test:loading {:doc  "Library loading in fresh processes on bb, nbb and the JVM: defaults, NACLJC_LIBSODIUM, -Dnacljc.libsodium, missing and wrong libraries"
+                :task (shell "bb" "-cp" "test" "-m" "loading.run")}
+
   test:wasm {:doc  "Check libsodium.js (WASM) against the same vectors (needs npm install in test/wasm)"
              :task (shell {:dir "test/wasm"} "nbb" "check.cljs")}
 
@@ -57,8 +60,8 @@
   test:signet {:doc  "All signet runs: JCA oracle (JVM), libsodium (JVM), libsodium (bb). Needs ../signet"
                :task (do (run 'test:signet-jca) (run 'test:signet-jvm) (run 'test:signet-bb))}
 
-  test:all  {:doc  "Every runtime (bb, JVM, nbb, WASM on Node, Scittle in Chromium) plus lint and format"
-             :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb)
+  test:all  {:doc  "Every runtime (bb, JVM, nbb, WASM on Node, Scittle in Chromium), library loading, lint and format"
+             :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb) (run 'test:loading)
                        (run 'test:wasm) (run 'test:browser) (run 'lint) (run 'fmt))}
 
   install   {:doc  "Install the jar to ~/.m2 as com.github.franks42/nacljc 0.1.0-SNAPSHOT (local only; re-run after changes)"

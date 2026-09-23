@@ -1,248 +1,500 @@
 (ns nacljc.core
-  "Thin libsodium binding over babashka.ffi. One source file for JVM
-   Clojure (org.babashka/ffi, JDK 25+), babashka (built in) and nbb
-   (built in, Node 26+ node:ffi).
+  "libsodium for Clojure: one source file for JVM Clojure (org.babashka/ffi,
+   JDK 25+), babashka (built in) and nbb (built in, Node 26+ node:ffi).
 
-   Byte arrays in and out: byte[] on the JVM and bb, Int8Array on nbb.
-   Covers the primitives signet uses: Ed25519, Ed25519->X25519
-   conversion, X25519, ChaCha20-Poly1305 IETF, HKDF-SHA-256 and
-   randombytes. Status: proof of concept — see docs/feasibility.md."
-  (:require [babashka.ffi :as ffi]))
+   This namespace is the boundary between Clojure and C. C trusts every
+   pointer and length it is given, so everything is checked here, before
+   C sees it:
 
-(def lib
-  "The loaded libsodium. HKDF needs libsodium >= 1.0.19."
-  (ffi/load-library {:mac   ["/opt/homebrew/opt/libsodium/lib/libsodium.dylib"
-                             "/usr/local/opt/libsodium/lib/libsodium.dylib"]
-                     :linux ["libsodium.so.26" "libsodium.so.23" "libsodium.so"]}))
+   - Types: every byte input must be a byte array: byte[] on the JVM and
+     bb; Int8Array or Uint8Array on nbb. Anything else throws ::bad-input.
+     Counts must be integers. Error data names types and sizes, never
+     contents.
+   - Sizes: fixed-size inputs (keys, seeds, nonces, signatures) are
+     length-checked (::bad-length). Variable lengths passed to C are always
+     taken from the array itself, never from the caller.
+   - Native memory: each call copies its inputs into a fresh confined arena,
+     calls C, and copies the results out. Before the arena is released,
+     every buffer in it is wiped with sodium_memzero, on success and on
+     error. No pointer escapes a call; results are fresh arrays; inputs are
+     never written to.
+   - Ed25519 secrets are 32-byte seeds. The 64-byte libsodium secret key
+     (seed || public key) exists only in native memory, inside one call, so
+     a mismatched public-key half cannot leak the private scalar.
+   - Every libsodium return code is checked. Failures are typed:
+     ::auth-failed, ::low-order-point, ::invalid-public-key, ::call-failed.
+   - The raw C bindings are private.
 
-(ffi/defcfn -sodium-init {:library lib} "sodium_init" [] :int)
-(ffi/defcfn version-string {:library lib} "sodium_version_string" [] :string)
-(ffi/defcfn -randombytes-buf {:library lib} "randombytes_buf" [:pointer :size_t] :void)
-(ffi/defcfn -sign-seed-keypair {:library lib} "crypto_sign_seed_keypair"
+   What the caller still owns: the byte arrays passed in and returned live
+   on the Clojure heap. They are not locked in memory, and the JVM's moving
+   garbage collector may have copied them. Wipe secrets you no longer need
+   with memzero!. Raw bytes also cannot tell an Ed25519 public key from an
+   X25519 public key (both 32 bytes): a typed layer above this one (such as
+   signet's key records) must keep them apart.
+
+   Loading: libsodium >= 1.0.19 is loaded when this namespace loads. Set
+   NACLJC_LIBSODIUM (or, on the JVM and bb, the system property
+   nacljc.libsodium) to a library path to use exactly that library."
+  (:require [babashka.ffi :as ffi]
+            [clojure.string :as str]))
+
+;; ---------------------------------------------------------------------------
+;; Loading libsodium
+;; ---------------------------------------------------------------------------
+
+(def ^:private default-locations
+  "Where libsodium is looked for when no location is configured, per OS."
+  {:mac   ["/opt/homebrew/opt/libsodium/lib/libsodium.dylib" ; Homebrew, Apple silicon
+           "/usr/local/opt/libsodium/lib/libsodium.dylib"    ; Homebrew, Intel
+           "/opt/local/lib/libsodium.dylib"]                 ; MacPorts
+   ;; .so.23 is libsodium 1.0.18: found so that the version check below can
+   ;; say "too old" rather than "not found".
+   :linux ["libsodium.so.26" "libsodium.so.23" "libsodium.so"]})
+
+(defn- os []
+  (let [s (str #?(:clj (System/getProperty "os.name") :cljs js/process.platform))]
+    (cond (re-find #"(?i)mac|darwin" s) :mac
+          (re-find #"(?i)linux" s)      :linux
+          :else                         (keyword (str/lower-case s)))))
+
+(defn- configured-location
+  "The explicitly configured library path and where it came from, or nil.
+   An empty value counts as not set."
+  []
+  (let [prop #?(:clj (System/getProperty "nacljc.libsodium") :cljs nil)
+        env  #?(:clj (System/getenv "NACLJC_LIBSODIUM") :cljs (.-NACLJC_LIBSODIUM js/process.env))]
+    (cond (seq prop) {:path prop :source "system property nacljc.libsodium"}
+          (seq env)  {:path env :source "environment variable NACLJC_LIBSODIUM"})))
+
+(def ^:private lib
+  (let [{:keys [path source]} (configured-location)
+        os    (os)
+        tried (if path [path] (get default-locations os))
+        hint  "Install libsodium >= 1.0.19, or set NACLJC_LIBSODIUM to its path."]
+    (when (empty? tried)
+      (throw (ex-info (str "nacljc: no default libsodium location for OS " (name os) ". " hint)
+                      {:type ::library-not-found :os os :tried []})))
+    (let [l (try
+              (ffi/load-library tried)
+              (catch #?(:clj Exception :cljs :default) e
+                (throw (ex-info (str "nacljc: cannot load libsodium from "
+                                     (if source (str path " (" source ")") (str/join ", " tried))
+                                     ". " hint)
+                                {:type ::library-not-found :os os :tried tried :source (or source :defaults)}
+                                e))))]
+      ;; A path that loads but is some other library would otherwise fail
+      ;; later with a bare "symbol not found".
+      (when-not (ffi/find-symbol l "sodium_init")
+        (throw (ex-info (str "nacljc: " (:path l) " loaded, but it is not libsodium (no sodium_init). " hint)
+                        {:type ::not-libsodium :path (:path l) :source (or source :defaults)})))
+      l)))
+
+;; ---------------------------------------------------------------------------
+;; Raw C bindings: private. They take pointers and trust every length.
+;; ---------------------------------------------------------------------------
+
+(ffi/defcfn ^:private -sodium-init {:library lib} "sodium_init" [] :int)
+(ffi/defcfn ^:private -version-string {:library lib} "sodium_version_string" [] :string)
+(ffi/defcfn ^:private -memzero {:library lib} "sodium_memzero" [:pointer :size_t] :void)
+(ffi/defcfn ^:private -memcmp {:library lib} "sodium_memcmp" [:pointer :pointer :size_t] :int)
+(ffi/defcfn ^:private -randombytes-buf {:library lib} "randombytes_buf" [:pointer :size_t] :void)
+(ffi/defcfn ^:private -sign-seed-keypair {:library lib} "crypto_sign_seed_keypair"
   [:pointer :pointer :pointer] :int)
-(ffi/defcfn -sign-detached {:library lib} "crypto_sign_detached"
+(ffi/defcfn ^:private -sign-detached {:library lib} "crypto_sign_detached"
   [:pointer :pointer :pointer :ulong :pointer] :int)
-(ffi/defcfn -sign-verify-detached {:library lib} "crypto_sign_verify_detached"
+(ffi/defcfn ^:private -sign-verify-detached {:library lib} "crypto_sign_verify_detached"
   [:pointer :pointer :ulong :pointer] :int)
-(ffi/defcfn -pk-to-curve25519 {:library lib} "crypto_sign_ed25519_pk_to_curve25519"
+(ffi/defcfn ^:private -pk-to-curve25519 {:library lib} "crypto_sign_ed25519_pk_to_curve25519"
   [:pointer :pointer] :int)
-(ffi/defcfn -sk-to-curve25519 {:library lib} "crypto_sign_ed25519_sk_to_curve25519"
+(ffi/defcfn ^:private -sk-to-curve25519 {:library lib} "crypto_sign_ed25519_sk_to_curve25519"
   [:pointer :pointer] :int)
-(ffi/defcfn -scalarmult {:library lib} "crypto_scalarmult_curve25519"
+(ffi/defcfn ^:private -scalarmult {:library lib} "crypto_scalarmult_curve25519"
   [:pointer :pointer :pointer] :int)
-(ffi/defcfn -scalarmult-base {:library lib} "crypto_scalarmult_curve25519_base"
+(ffi/defcfn ^:private -scalarmult-base {:library lib} "crypto_scalarmult_curve25519_base"
   [:pointer :pointer] :int)
-(ffi/defcfn -hash-sha256 {:library lib} "crypto_hash_sha256"
+(ffi/defcfn ^:private -hash-sha256 {:library lib} "crypto_hash_sha256"
   [:pointer :pointer :ulong] :int)
-(ffi/defcfn -hmacsha256-statebytes {:library lib} "crypto_auth_hmacsha256_statebytes" [] :size_t)
-(ffi/defcfn -hmacsha256-init {:library lib} "crypto_auth_hmacsha256_init"
+(ffi/defcfn ^:private -hmacsha256-statebytes {:library lib} "crypto_auth_hmacsha256_statebytes" [] :size_t)
+(ffi/defcfn ^:private -hmacsha256-init {:library lib} "crypto_auth_hmacsha256_init"
   [:pointer :pointer :size_t] :int)
-(ffi/defcfn -hmacsha256-update {:library lib} "crypto_auth_hmacsha256_update"
+(ffi/defcfn ^:private -hmacsha256-update {:library lib} "crypto_auth_hmacsha256_update"
   [:pointer :pointer :ulong] :int)
-(ffi/defcfn -hmacsha256-final {:library lib} "crypto_auth_hmacsha256_final"
+(ffi/defcfn ^:private -hmacsha256-final {:library lib} "crypto_auth_hmacsha256_final"
   [:pointer :pointer] :int)
-(ffi/defcfn -aead-encrypt {:library lib} "crypto_aead_chacha20poly1305_ietf_encrypt"
+(ffi/defcfn ^:private -aead-encrypt {:library lib} "crypto_aead_chacha20poly1305_ietf_encrypt"
   [:pointer :pointer :pointer :ulong :pointer :ulong :pointer :pointer :pointer] :int)
-(ffi/defcfn -aead-decrypt {:library lib} "crypto_aead_chacha20poly1305_ietf_decrypt"
+(ffi/defcfn ^:private -aead-decrypt {:library lib} "crypto_aead_chacha20poly1305_ietf_decrypt"
   [:pointer :pointer :pointer :pointer :ulong :pointer :ulong :pointer :pointer] :int)
-(ffi/defcfn -hkdf-extract {:library lib} "crypto_kdf_hkdf_sha256_extract"
+(ffi/defcfn ^:private -hkdf-extract {:library lib} "crypto_kdf_hkdf_sha256_extract"
   [:pointer :pointer :size_t :pointer :size_t] :int)
-(ffi/defcfn -hkdf-expand {:library lib} "crypto_kdf_hkdf_sha256_expand"
+(ffi/defcfn ^:private -hkdf-expand {:library lib} "crypto_kdf_hkdf_sha256_expand"
   [:pointer :size_t :pointer :size_t :pointer] :int)
 
 (when (neg? (-sodium-init))
-  (throw (ex-info "sodium_init failed" {})))
+  (throw (ex-info "nacljc: sodium_init failed" {:type ::init-failed})))
 
-(def minimum-version
-  "Oldest libsodium release this binding supports: 1.0.19 added HKDF
+;; ---------------------------------------------------------------------------
+;; Version
+;; ---------------------------------------------------------------------------
+
+(def minimum-libsodium-version
+  "Oldest libsodium release nacljc supports: 1.0.19 added HKDF
    (crypto_kdf_hkdf_sha256_*)."
   [1 0 19])
 
-(defn version>=?
+(defn- version>=?
   "Is release version string s (e.g. \"1.0.22\") at least min, a vector
    such as [1 0 19]? Numeric, not lexicographic (1.0.9 < 1.0.19). Pure;
-   false for an unparseable string."
+   false for anything unparseable."
   [s min]
   (if-let [[_ a b c] (and (string? s) (re-matches #"(\d+)\.(\d+)\.(\d+).*" s))]
     (not (neg? (compare [(parse-long a) (parse-long b) (parse-long c)] min)))
     false))
 
-;; Fail at load, clearly, rather than at the first HKDF call with an
-;; obscure missing-symbol error. Ubuntu 24.04 / 25.10 ship 1.0.18.
-(let [v (version-string)]
-  (when-not (version>=? v minimum-version)
-    (throw (ex-info (str "libsodium " v " is too old: nacljc needs >= "
-                         (apply str (interpose "." minimum-version))
+(defn libsodium-version
+  "The loaded libsodium's version string, e.g. \"1.0.22\"."
+  []
+  (-version-string))
+
+;; Fail at load, clearly, rather than at the first HKDF call with an obscure
+;; missing-symbol error. Ubuntu 24.04 / 25.10 ship 1.0.18.
+(let [v (libsodium-version)]
+  (when-not (version>=? v minimum-libsodium-version)
+    (throw (ex-info (str "nacljc: libsodium " v " is too old: nacljc needs >= "
+                         (str/join "." minimum-libsodium-version)
                          " (HKDF). Debian/Ubuntu packages are 1.0.18; install a newer"
                          " libsodium (e.g. Homebrew, or build from download.libsodium.org).")
-                    {:type ::libsodium-too-old :found v :minimum minimum-version}))))
+                    {:type ::libsodium-too-old :found v :minimum minimum-libsodium-version}))))
 
-(defmacro ^:private with-arena
-  "Like with-open over a confined arena; nbb has no with-open."
-  [[a] & body]
-  `(let [~a (ffi/confined-arena)]
-     (try ~@body (finally (.close ~a)))))
+;; ---------------------------------------------------------------------------
+;; Input checks. They run before any native memory is allocated.
+;; ---------------------------------------------------------------------------
 
-(defn- in [arena bs]
-  (let [p (ffi/alloc arena (max 1 (alength bs)))]
-    (ffi/write-array p :char bs)
+(defn- byte-array? [x]
+  #?(:clj  (bytes? x)
+     :cljs (or (instance? js/Int8Array x) (instance? js/Uint8Array x))))
+
+(defn- type-name
+  "The name of x's type, for error messages: never x's contents, which may
+   be secret."
+  [x]
+  (if (nil? x)
+    "nil"
+    #?(:clj  (.getName (class x))
+       :cljs (or (some-> x .-constructor .-name) "unknown"))))
+
+(defn- empty-bytes [] #?(:clj (byte-array 0) :cljs (js/Int8Array. 0)))
+
+(defn- as-int8
+  "The platform byte array babashka.ffi writes: byte[] as is; on nbb an
+   Int8Array view (not a copy) of a Uint8Array."
+  [bs]
+  #?(:clj  bs
+     :cljs (if (instance? js/Int8Array bs)
+             bs
+             (js/Int8Array. (.-buffer bs) (.-byteOffset bs) (.-length bs)))))
+
+(defn- bad-input! [what expected x]
+  (throw (ex-info (str "nacljc: " what " must be " expected ", got " (type-name x))
+                  {:type ::bad-input :what what :expected expected :got (type-name x)})))
+
+(defn- bad-length! [what expected actual]
+  (throw (ex-info (str "nacljc: " what " must be " expected " bytes, got " actual)
+                  {:type ::bad-length :what what :expected expected :actual actual})))
+
+(defn- need-bytes!
+  "x, checked to be a byte array (of exactly n bytes, if n is given), as
+   the platform byte array. Throws ::bad-input or ::bad-length."
+  ([x what]
+   (when-not (byte-array? x) (bad-input! what "a byte array" x))
+   (as-int8 x))
+  ([x n what]
+   (let [bs (need-bytes! x what)]
+     (when-not (= n (alength bs)) (bad-length! what n (alength bs)))
+     bs)))
+
+(defn- optional-bytes!
+  "Like need-bytes!, but nil means empty."
+  [x what]
+  (if (nil? x) (empty-bytes) (need-bytes! x what)))
+
+(defn- need-count!
+  "n, checked to be an integer in lo..hi. Throws ::bad-input or ::bad-length."
+  [n lo hi what]
+  (when-not (integer? n) (bad-input! what "an integer" n))
+  (when-not (<= lo n hi) (bad-length! what (str lo ".." hi) n))
+  #?(:clj (long n) :cljs n))
+
+;; ---------------------------------------------------------------------------
+;; Scratch memory: one confined arena per call, wiped before release.
+;; ---------------------------------------------------------------------------
+
+(def ^:private ^:dynamic *audit*
+  "Tests bind this to an atom to record [:alloc addr n], [:wipe addr n] and
+   [:close]. Addresses and sizes only, never contents."
+  nil)
+
+(defn- audit! [event]
+  (when-let [a *audit*] (swap! a conj event)))
+
+(defn- wipe-native!
+  "Zero n bytes of native memory at p with sodium_memzero, which the C
+   compiler may not optimise away."
+  [p n]
+  (-memzero p n)
+  (audit! [:wipe (str (ffi/address p)) n]))
+
+(defn- open-scratch []
+  {:arena (ffi/confined-arena) :live (volatile! [])})
+
+(defn- alloc!
+  "n bytes (at least 1) of zeroed native memory in the scratch arena,
+   registered to be wiped."
+  [scratch n]
+  (let [size (max 1 n)
+        p    (ffi/alloc (:arena scratch) size)]
+    (vswap! (:live scratch) conj [p size])
+    (audit! [:alloc (str (ffi/address p)) size])
     p))
 
-(defn- out [arena n] (ffi/alloc arena n))
+(defn- release!
+  "Wipe every buffer in the scratch arena, then close it, even if a wipe
+   throws."
+  [{:keys [arena live]}]
+  (try
+    (doseq [[p size] @live]
+      (wipe-native! p size))
+    (finally
+      (.close arena)
+      (audit! [:close]))))
 
-(defn- bytes-of [p n] (ffi/read-array p :char n))
+(defmacro ^:private with-scratch
+  "Evaluate body with s bound to a fresh scratch arena. Every buffer in it
+   is wiped and the arena released when body returns or throws. Nothing
+   allocated in it may escape: copy results out with read!."
+  [[s] & body]
+  `(let [~s (open-scratch)]
+     (try ~@body (finally (release! ~s)))))
 
-(defn- check! [rc what]
+(defn- in!
+  "Copy platform byte array bs (already checked) into scratch memory."
+  [scratch bs]
+  (let [p (alloc! scratch (alength bs))]
+    (when (pos? (alength bs)) (ffi/write-array p :char bs))
+    p))
+
+(defn- read!
+  "Copy n bytes out of native memory into a new platform byte array."
+  [p n]
+  (if (zero? n) (empty-bytes) (ffi/read-array p :char n)))
+
+(defn- call-ok!
+  "Throw ::call-failed unless the libsodium call returned 0."
+  [rc c-fn]
   (when-not (zero? rc)
-    (throw (ex-info (str what " failed") {:rc rc}))))
+    (throw (ex-info (str "nacljc: " c-fn " failed") {:type ::call-failed :fn c-fn :rc rc}))))
 
-(defn- check-len!
-  "libsodium reads fixed-size inputs (keys, seeds, signatures, nonces)
-   without knowing the buffer size. A shorter array would make it read past
-   the allocation, so every fixed-size input is checked before the call."
-  [bs n what]
-  (when-not (and (some? bs) (= n (alength bs)))
-    (throw (ex-info (str what " must be " n " bytes")
-                    {:type ::bad-length :what what :expected n
-                     :actual (when (some? bs) (alength bs))}))))
+(defn- seed-keypair!
+  "Ed25519 public key and 64-byte secret key for seed, in scratch memory."
+  [scratch seed]
+  (let [pk (alloc! scratch 32) sk (alloc! scratch 64)]
+    (call-ok! (-sign-seed-keypair pk sk (in! scratch seed)) "crypto_sign_seed_keypair")
+    [pk sk]))
 
-(defn- bytes-or-empty [bs]
-  (or bs #?(:clj (byte-array 0) :cljs (js/Int8Array. 0))))
+;; ---------------------------------------------------------------------------
+;; Public API
+;; ---------------------------------------------------------------------------
+
+(def ^:private max-count 2147483647)
 
 (defn random-bytes
-  "n bytes from libsodium's CSPRNG (the OS generator natively)."
+  "n bytes (n >= 0) from libsodium's CSPRNG (the OS generator natively)."
   [n]
-  (with-arena [a]
-    (let [p (out a n)]
-      (-randombytes-buf p n)
-      (bytes-of p n))))
+  (let [n (need-count! n 0 max-count "random-bytes n")]
+    (if (zero? n)
+      (empty-bytes)
+      (with-scratch [s]
+        (let [p (alloc! s n)]
+          (-randombytes-buf p n)
+          (read! p n))))))
 
-(defn seed->keypair
-  "Ed25519: 32-byte seed -> [public-key(32) secret-key(64)]."
+(defn memzero!
+  "Overwrite byte array bs with zeros, in place. Returns nil. Use it for
+   secrets you no longer need. The JVM's garbage collector may already have
+   copied the array elsewhere; this clears only the array you hold."
+  [bs]
+  (let [bs (need-bytes! bs "memzero! argument")]
+    #?(:clj  (java.util.Arrays/fill ^bytes bs (byte 0))
+       :cljs (.fill bs 0))
+    nil))
+
+(defn constant-time-equal?
+  "Do byte arrays a and b hold the same bytes? For equal lengths the time
+   taken does not depend on the contents (sodium_memcmp). Different lengths
+   return false at once: lengths are not treated as secret."
+  [a b]
+  (let [a (need-bytes! a "constant-time-equal? a")
+        b (need-bytes! b "constant-time-equal? b")
+        n (alength a)]
+    (cond
+      (not= n (alength b)) false
+      (zero? n)            true
+      :else                (with-scratch [s]
+                             (zero? (-memcmp (in! s a) (in! s b) n))))))
+
+(defn ed25519-public-key
+  "Ed25519 public key (32 bytes) for a 32-byte seed."
   [seed]
-  (check-len! seed 32 "Ed25519 seed")
-  (with-arena [a]
-    (let [pk (out a 32) sk (out a 64)]
-      (check! (-sign-seed-keypair pk sk (in a seed)) "crypto_sign_seed_keypair")
-      [(bytes-of pk 32) (bytes-of sk 64)])))
+  (let [seed (need-bytes! seed 32 "Ed25519 seed")]
+    (with-scratch [s]
+      (let [[pk _] (seed-keypair! s seed)]
+        (read! pk 32)))))
 
-(defn sign
-  "Ed25519 detached signature (64 bytes) of msg with a 64-byte secret key."
-  [sk msg]
-  (check-len! sk 64 "Ed25519 secret key")
-  (with-arena [a]
-    (let [sig (out a 64)]
-      (check! (-sign-detached sig ffi/null (in a msg) (alength msg) (in a sk))
-              "crypto_sign_detached")
-      (bytes-of sig 64))))
+(defn ed25519-sign
+  "Ed25519 signature (64 bytes) of msg with the key for a 32-byte seed.
+   Deterministic. The full secret key is derived from the seed inside
+   native memory for each signature, so it never exists on the Clojure
+   heap and its public-key half cannot be mismatched."
+  [seed msg]
+  (let [seed (need-bytes! seed 32 "Ed25519 seed")
+        msg  (need-bytes! msg "message")]
+    (with-scratch [s]
+      (let [[_ sk] (seed-keypair! s seed)
+            sig    (alloc! s 64)]
+        (call-ok! (-sign-detached sig ffi/null (in! s msg) (alength msg) sk) "crypto_sign_detached")
+        (read! sig 64)))))
 
-(defn verify?
-  "True if sig is a valid Ed25519 signature of msg under pk. Returns false
-   (never throws) for a signature or key of the wrong size: both are
-   untrusted input."
+(defn ed25519-verify?
+  "True if sig is a valid Ed25519 signature of msg under public key pk.
+   pk and sig are untrusted input: anything that is not a 32-byte and a
+   64-byte array gives false, never an exception. msg must be a byte array
+   (::bad-input otherwise)."
   [pk msg sig]
-  (and (some? pk) (= 32 (alength pk))
-       (some? sig) (= 64 (alength sig))
-       (with-arena [a]
-         (zero? (-sign-verify-detached (in a sig) (in a msg) (alength msg) (in a pk))))))
+  (let [msg (need-bytes! msg "message")]
+    (boolean
+     (and (byte-array? pk) (= 32 (alength pk))
+          (byte-array? sig) (= 64 (alength sig))
+          (with-scratch [s]
+            (zero? (-sign-verify-detached (in! s (as-int8 sig)) (in! s msg) (alength msg)
+                                          (in! s (as-int8 pk)))))))))
 
-(defn ed-pk->x-pk
-  "Ed25519 public key -> X25519 public key."
-  [ed-pk]
-  (check-len! ed-pk 32 "Ed25519 public key")
-  (with-arena [a]
-    (let [o (out a 32)]
-      (check! (-pk-to-curve25519 o (in a ed-pk)) "crypto_sign_ed25519_pk_to_curve25519")
-      (bytes-of o 32))))
+(defn ed25519->x25519-public-key
+  "X25519 public key for an Ed25519 public key (the birational map). Throws
+   ::invalid-public-key for a point that is not on the curve or has small
+   order."
+  [pk]
+  (let [pk (need-bytes! pk 32 "Ed25519 public key")]
+    (with-scratch [s]
+      (let [o (alloc! s 32)]
+        (when-not (zero? (-pk-to-curve25519 o (in! s pk)))
+          (throw (ex-info "nacljc: not a valid Ed25519 public key"
+                          {:type ::invalid-public-key :fn "crypto_sign_ed25519_pk_to_curve25519"})))
+        (read! o 32)))))
 
-(defn ed-sk->x-sk
-  "Ed25519 64-byte secret key -> X25519 secret key."
-  [ed-sk]
-  (check-len! ed-sk 64 "Ed25519 secret key")
-  (with-arena [a]
-    (let [o (out a 32)]
-      (check! (-sk-to-curve25519 o (in a ed-sk)) "crypto_sign_ed25519_sk_to_curve25519")
-      (bytes-of o 32))))
+(defn ed25519->x25519-secret-key
+  "X25519 secret key for the Ed25519 key with this 32-byte seed."
+  [seed]
+  (let [seed (need-bytes! seed 32 "Ed25519 seed")]
+    (with-scratch [s]
+      (let [[_ sk] (seed-keypair! s seed)
+            o      (alloc! s 32)]
+        (call-ok! (-sk-to-curve25519 o sk) "crypto_sign_ed25519_sk_to_curve25519")
+        (read! o 32)))))
 
 (defn x25519
-  "X25519 shared secret. Throws for low-order points (libsodium returns -1)."
-  [our-sk their-pk]
-  (check-len! our-sk 32 "X25519 secret key")
-  (check-len! their-pk 32 "X25519 public key")
-  (with-arena [a]
-    (let [o (out a 32)]
-      (check! (-scalarmult o (in a our-sk) (in a their-pk)) "crypto_scalarmult_curve25519")
-      (bytes-of o 32))))
+  "X25519 shared secret (32 bytes) of our secret key and their public key.
+   Throws ::low-order-point when the result is all zeros (their key has
+   small order); libsodium returns -1 for it."
+  [sk pk]
+  (let [sk (need-bytes! sk 32 "X25519 secret key")
+        pk (need-bytes! pk 32 "X25519 public key")]
+    (with-scratch [s]
+      (let [o (alloc! s 32)]
+        (when-not (zero? (-scalarmult o (in! s sk) (in! s pk)))
+          (throw (ex-info "nacljc: X25519 with a low-order public key"
+                          {:type ::low-order-point :fn "crypto_scalarmult_curve25519"})))
+        (read! o 32)))))
 
-(defn aead-encrypt
-  "ChaCha20-Poly1305 IETF: key(32) nonce(12) plaintext ad -> ciphertext||tag(16).
-   ad may be nil."
-  [k nonce pt ad]
-  (check-len! k 32 "AEAD key")
-  (check-len! nonce 12 "AEAD nonce")
-  (let [ad (bytes-or-empty ad)]
-    (with-arena [a]
-      (let [n (+ (alength pt) 16)
-            c (out a n)]
-        (check! (-aead-encrypt c ffi/null (in a pt) (alength pt) (in a ad) (alength ad)
-                               ffi/null (in a nonce) (in a k))
-                "crypto_aead_chacha20poly1305_ietf_encrypt")
-        (bytes-of c n)))))
-
-(defn aead-decrypt
-  "Inverse of aead-encrypt. Throws ex-info on authentication failure or a
-   ciphertext shorter than the 16-byte tag. ad may be nil."
-  [k nonce ct ad]
-  (check-len! k 32 "AEAD key")
-  (check-len! nonce 12 "AEAD nonce")
-  (when-not (and (some? ct) (<= 16 (alength ct)))
-    (throw (ex-info "AEAD ciphertext shorter than the 16-byte tag"
-                    {:type ::bad-length :what "AEAD ciphertext"})))
-  (let [ad (bytes-or-empty ad)]
-    (with-arena [a]
-      (let [n (- (alength ct) 16)
-            m (out a (max 1 n))]
-        (when-not (zero? (-aead-decrypt m ffi/null ffi/null (in a ct) (alength ct)
-                                        (in a ad) (alength ad) (in a nonce) (in a k)))
-          (throw (ex-info "AEAD authentication failed" {})))
-        (bytes-of m n)))))
-
-(defn hkdf-sha256
-  "RFC 5869 HKDF-SHA-256 extract-then-expand; len bytes (max 8160)."
-  [ikm salt info len]
-  (with-arena [a]
-    (let [prk (out a 32)
-          o   (out a len)]
-      (check! (-hkdf-extract prk (in a salt) (alength salt) (in a ikm) (alength ikm))
-              "crypto_kdf_hkdf_sha256_extract")
-      (check! (-hkdf-expand o len (in a info) (alength info) prk)
-              "crypto_kdf_hkdf_sha256_expand")
-      (bytes-of o len))))
-
-(defn x25519-base
-  "X25519 public key for a 32-byte secret key (scalar times the base point)."
+(defn x25519-public-key
+  "X25519 public key (32 bytes) for a 32-byte secret key."
   [sk]
-  (check-len! sk 32 "X25519 secret key")
-  (with-arena [a]
-    (let [o (out a 32)]
-      (check! (-scalarmult-base o (in a sk)) "crypto_scalarmult_curve25519_base")
-      (bytes-of o 32))))
+  (let [sk (need-bytes! sk 32 "X25519 secret key")]
+    (with-scratch [s]
+      (let [o (alloc! s 32)]
+        (call-ok! (-scalarmult-base o (in! s sk)) "crypto_scalarmult_curve25519_base")
+        (read! o 32)))))
+
+(defn chacha20-poly1305-encrypt
+  "ChaCha20-Poly1305 (IETF, RFC 8439): 32-byte key, 12-byte nonce,
+   plaintext and associated data aad (nil means none). Returns ciphertext
+   || 16-byte tag. Never reuse a nonce with the same key."
+  [k nonce pt aad]
+  (let [k     (need-bytes! k 32 "ChaCha20-Poly1305 key")
+        nonce (need-bytes! nonce 12 "ChaCha20-Poly1305 nonce")
+        pt    (need-bytes! pt "plaintext")
+        aad   (optional-bytes! aad "associated data")
+        n     (+ (alength pt) 16)]
+    (with-scratch [s]
+      (let [c (alloc! s n)]
+        (call-ok! (-aead-encrypt c ffi/null (in! s pt) (alength pt) (in! s aad) (alength aad)
+                                 ffi/null (in! s nonce) (in! s k))
+                  "crypto_aead_chacha20poly1305_ietf_encrypt")
+        (read! c n)))))
+
+(defn chacha20-poly1305-decrypt
+  "Inverse of chacha20-poly1305-encrypt. Throws ::auth-failed when the
+   ciphertext, nonce, key or aad do not match; ::bad-length when the
+   ciphertext is shorter than the 16-byte tag."
+  [k nonce ct aad]
+  (let [k     (need-bytes! k 32 "ChaCha20-Poly1305 key")
+        nonce (need-bytes! nonce 12 "ChaCha20-Poly1305 nonce")
+        ct    (need-bytes! ct "ciphertext")
+        aad   (optional-bytes! aad "associated data")]
+    (when (< (alength ct) 16) (bad-length! "ciphertext" ">= 16" (alength ct)))
+    (let [n (- (alength ct) 16)]
+      (with-scratch [s]
+        (let [m (alloc! s n)]
+          (when-not (zero? (-aead-decrypt m ffi/null ffi/null (in! s ct) (alength ct)
+                                          (in! s aad) (alength aad) (in! s nonce) (in! s k)))
+            (throw (ex-info "nacljc: ChaCha20-Poly1305 authentication failed" {:type ::auth-failed})))
+          (read! m n))))))
+
+(defn hkdf-sha-256
+  "HKDF-SHA-256 (RFC 5869), extract then expand: len bytes (1..8160) from
+   input keying material ikm, with salt and info (nil means empty; an empty
+   salt equals the RFC's default of 32 zero bytes)."
+  [ikm salt info len]
+  (let [ikm  (need-bytes! ikm "HKDF ikm")
+        salt (optional-bytes! salt "HKDF salt")
+        info (optional-bytes! info "HKDF info")
+        len  (need-count! len 1 8160 "HKDF output length")]
+    (with-scratch [s]
+      (let [prk (alloc! s 32)
+            o   (alloc! s len)]
+        (call-ok! (-hkdf-extract prk (in! s salt) (alength salt) (in! s ikm) (alength ikm))
+                  "crypto_kdf_hkdf_sha256_extract")
+        (call-ok! (-hkdf-expand o len (in! s info) (alength info) prk)
+                  "crypto_kdf_hkdf_sha256_expand")
+        (read! o len)))))
 
 (defn sha-256
-  "SHA-256 digest (32 bytes)."
+  "SHA-256 digest (32 bytes) of data."
   [data]
-  (with-arena [a]
-    (let [o (out a 32)]
-      (check! (-hash-sha256 o (in a data) (alength data)) "crypto_hash_sha256")
-      (bytes-of o 32))))
+  (let [data (need-bytes! data "SHA-256 input")]
+    (with-scratch [s]
+      (let [o (alloc! s 32)]
+        (call-ok! (-hash-sha256 o (in! s data) (alength data)) "crypto_hash_sha256")
+        (read! o 32)))))
 
-(defn hmac-sha256
-  "HMAC-SHA-256 (32 bytes) with a key of any length (streaming API)."
+(defn hmac-sha-256
+  "HMAC-SHA-256 (32 bytes) of data under key k, which may have any length."
   [k data]
-  (with-arena [a]
-    (let [st (out a (-hmacsha256-statebytes))
-          o  (out a 32)]
-      (check! (-hmacsha256-init st (in a k) (alength k)) "crypto_auth_hmacsha256_init")
-      (check! (-hmacsha256-update st (in a data) (alength data)) "crypto_auth_hmacsha256_update")
-      (check! (-hmacsha256-final st o) "crypto_auth_hmacsha256_final")
-      (bytes-of o 32))))
+  (let [k    (need-bytes! k "HMAC key")
+        data (need-bytes! data "HMAC input")]
+    (with-scratch [s]
+      (let [st (alloc! s (-hmacsha256-statebytes))
+            o  (alloc! s 32)]
+        (call-ok! (-hmacsha256-init st (in! s k) (alength k)) "crypto_auth_hmacsha256_init")
+        (call-ok! (-hmacsha256-update st (in! s data) (alength data)) "crypto_auth_hmacsha256_update")
+        (call-ok! (-hmacsha256-final st o) "crypto_auth_hmacsha256_final")
+        (read! o 32)))))

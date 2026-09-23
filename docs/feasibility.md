@@ -93,9 +93,10 @@ unchecked. Given a 32-byte array where the 64-byte secret key belongs, it
 returned a "signature" without error; given a 16-byte X25519 public key, it
 returned a "shared secret". Both were computed from memory past the end of
 the allocation. `nacljc.core` now checks every fixed-size input and throws
-`::bad-length`. `verify?` returns false for a wrong-size signature or key,
-because both are untrusted input. `length-checks` in `core_test.cljc`
-covers this. Any future binding needs the same discipline.
+`::bad-length`. `ed25519-verify?` returns false for a wrong-size signature
+or key, because both are untrusted input. `wrong-sizes-are-bad-length` in
+`core_test.cljc` covers this. Any future binding needs the same discipline;
+see "Hardening before 0.1.0" below.
 
 ## babashka.ffi [source + verified]
 
@@ -121,8 +122,8 @@ covers this. Any future binding needs the same discipline.
 - **Portability details [verified]:**
   - `read-array :char` returns a `byte[]` on the JVM and bb, and an
     `Int8Array` on nbb. `alength` works on both.
-  - nbb has no `with-open`. `core.cljc` uses a small `with-arena` macro,
-    which closes the arena in a `finally`.
+  - nbb has no `with-open`. `core.cljc` uses a small `with-scratch` macro,
+    which wipes and closes the arena in a `finally`.
 - clj-kondo config ships inside the jar (`clj-kondo.exports/babashka/ffi`).
   Import it with
   `clj-kondo --lint "$(clojure -Spath)" --dependencies --copy-configs --skip-lint`.
@@ -329,3 +330,69 @@ breaks nobody.
    build.
 4. Decide on secp256k1, and on how users get libsodium installed
    (documentation, or bundling per-platform binaries).
+
+## Hardening before 0.1.0 (2026-09-23) [verified]
+
+Before the first Clojars release, the binding was reworked to be the only
+place where Clojure values become C pointers. The API was renamed to say
+which algorithm each function is (`ed25519-sign`,
+`chacha20-poly1305-encrypt`, `hkdf-sha-256`, ...). The README's "Memory and
+type safety" section lists the guarantees. The findings behind them:
+
+- **Unchecked counts reach C and kill the process.** Before the change,
+  `(hkdf-sha256 ikm nil info 32)` threw a bare `NullPointerException`, and
+  HKDF with length 0 threw an internal babashka.ffi error. With the count
+  check removed as an experiment, `(random-bytes -1)` did not throw: libsodium's
+  `randombytes_sysrandom` asserted `size <= SSIZE_MAX` and aborted the whole
+  process. Every count is now an integer in a checked range.
+- **Ed25519 "double public key" oracle** [source: libsodium
+  `crypto_sign/ed25519/ref10/sign.c`]. `crypto_sign_detached` derives the
+  nonce from the seed alone and hashes `sk[32..64]`, the public-key half,
+  into the challenge without checking it. Two signatures of the same
+  message under one seed with different public-key halves reveal the
+  private scalar. signet's adapter built the 64-byte key in the Clojure
+  heap on every signature. `ed25519-sign` now takes the seed and derives
+  the key in native memory, so a mismatch cannot occur, and the 64-byte key
+  never exists on the heap.
+- **Native buffers were freed without being cleared.** Keys, seeds, shared
+  secrets, HMAC state and plaintexts were copied into arena memory and
+  released as they were. Every allocation now goes through a per-call
+  scratch arena that wipes each buffer with `sodium_memzero` before
+  closing, in a `finally`. An audit hook (`*audit*`, private) records every
+  allocation, wipe and close, and the tests check that they match, both on
+  success and when C reports a failure.
+- **Right answers can hide over-reads.** With `ed25519-verify?`'s length
+  guard removed as an experiment, every test still passed: C read past the
+  short signature and returned false, the expected answer. The tests now
+  also assert that rejected input allocates no native memory at all, and
+  that catches it.
+- **nbb byte types.** babashka.ffi's `write-array :char` accepts only
+  `Int8Array`. A `Uint8Array`, the usual JS byte type, failed deep inside
+  babashka.ffi. It is now accepted through a zero-copy `Int8Array` view.
+  Other typed arrays are `::bad-input`: `alength` counts their elements,
+  not their bytes. `read-array` copies on both runtimes (checked by
+  overwriting the buffer after reading), so wiping native memory cannot
+  corrupt a result.
+- **Loading.** A configured path (`NACLJC_LIBSODIUM`, or the
+  `-Dnacljc.libsodium` property on the JVM and bb) is the only one tried. A
+  path that loads but is not libsodium is `::not-libsodium`, where before
+  it failed with a bare "symbol not found". On the JVM that surfaced as
+  "Syntax error macroexpanding". 19 subprocess checks on bb, nbb and the
+  JVM (`bb test:loading`) cover this.
+
+Proof that each guard bites: removing it made the tests fail. The counts
+of failed assertions were:
+
+| Guard removed | Failed |
+|---|---|
+| `sodium_memzero` call | 1 |
+| wipe in `release!` | 16 |
+| wipe on the error path | 2 |
+| type check | 178 |
+| fixed-size length check | 13 |
+| count range check | 3, plus a process abort |
+| `ed25519-verify?` size guards | 5 each |
+| ciphertext ≥ tag check | 1 |
+| raw binding made public | 1 |
+| `sodium_init` check at load | 3 loading checks |
+

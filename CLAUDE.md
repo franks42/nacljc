@@ -48,7 +48,8 @@ Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
 ## Gotchas found so far
 
 - `babashka.ffi` returns `byte[]` on JVM/bb and `Int8Array` on nbb.
-- nbb has no `with-open` — use the `with-arena` macro in `core.cljc`.
+- nbb has no `with-open`. `core.cljc` uses its `with-scratch` macro, which
+  also wipes every native buffer (sodium_memzero) before closing the arena.
 - The JVM needs JDK 25+ (JDK 21 fails) and `--enable-native-access=ALL-UNNAMED`
   (set in the `:test` alias).
 - A bb task that calls `(System/exit 0)` ends a whole `bb test:all` run.
@@ -59,12 +60,27 @@ Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
   UTF-8 string, so lone surrogates collide with U+FFFD and differ from the
   JVM's `?`. **Facade rule: KDF/AEAD contexts are bytes, never strings.**
   See "HKDF in libsodium and libsodium.js" in docs/feasibility.md.
-- libsodium reads fixed-size inputs blindly: every key, seed, signature and
-  nonce must be length-checked before the FFI call (`check-len!`), or a
-  short array makes it read past the allocation. `verify?` returns false on
-  bad sizes (untrusted input).
+- libsodium reads fixed-size inputs blindly: every input is type- and
+  length-checked before the FFI call (`need-bytes!`, `need-count!`), or a
+  short array makes it read past the allocation. `ed25519-verify?` returns
+  false on bad sizes (untrusted input). Tests assert rejected input
+  allocates **no** native memory: a missing guard whose C call still
+  answers correctly (an over-read) is otherwise invisible.
+- **Hardening rules for any new binding** (README "Memory and type
+  safety"): check types and sizes first; allocate only through `alloc!`/`in!`
+  inside `with-scratch`; copy results out with `read!`; check the return
+  code; add the function to the public-API test, the bad-input table, the
+  hygiene audit, and prove each guard by removing it.
+- Without the count check, `(random-bytes -1)` aborts the process inside
+  libsodium (`size <= SSIZE_MAX`). Never pass an unchecked count to C.
+- Ed25519 takes 32-byte seeds only: libsodium's `crypto_sign_detached`
+  hashes the secret key's public-key half unchecked, and a mismatched half
+  leaks the scalar.
+- On nbb, `babashka.ffi/write-array :char` accepts only `Int8Array`;
+  `as-int8` makes a zero-copy view of a `Uint8Array`. `read-array` copies
+  on both runtimes (verified), so wiping native memory is safe.
 - clj-kondo: the `defcfn` hooks are imported into `.clj-kondo/imports`.
-  `with-arena` lints as `fn`, and promesa's `p/let` as `let`.
+  `with-scratch` lints as `fn`, and promesa's `p/let` as `let`.
 
 ## Next steps (from the feasibility doc)
 
