@@ -2,7 +2,7 @@
   "Run nacljc's own test suite against a packaged jar, the way a user would
    get it: from a scratch project with no src/, on the JVM, bb and nbb.
 
-     bb test:jar                ; the locally installed snapshot (bb install first)
+     bb test:jar                ; the locally installed jar (build.clj's version)
      bb test:clojars 0.1.0      ; a release, fetched from Clojars
 
    For a release the JVM and bb use an empty local Maven repository, so the
@@ -65,7 +65,13 @@
       (println (str "\n" coord " " version ": the suite passes from the jar on the JVM, bb and nbb"))
       (finally (fs/delete-tree dir)))))
 
+(defn- build-version
+  "The version build.clj builds, i.e. what bb install just installed."
+  []
+  (or (second (re-find #"\(def version \"([^\"]+)\"\)" (slurp "build.clj")))
+      (throw (ex-info "cannot parse the version from build.clj" {}))))
+
 (defn -main [& [mode version]]
   (case mode
-    "snapshot" (check (or version "0.1.0-SNAPSHOT") false)
+    "local"    (check (or version (build-version)) false)
     "clojars"  (check (or version (throw (ex-info "usage: clojars <version>" {}))) true)))

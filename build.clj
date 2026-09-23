@@ -13,7 +13,7 @@
             [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.franks42/nacljc)
-(def version "0.1.0-SNAPSHOT")
+(def version "0.1.0")
 (def class-dir "target/classes")
 (def jar-file "target/nacljc.jar")
 ;; :root nil keeps org.clojure/clojure out of the pom; the pom lists only

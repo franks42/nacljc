@@ -69,7 +69,7 @@
   test:jar  {:doc  "Install the jar, then run the suite against it from a scratch project (no src/) on the JVM, bb and nbb"
              :task (do (shell "clojure" "-P") ; fresh machines: tools.build cannot fetch deps itself
                        (shell "clojure" "-T:build" "install")
-                       (shell "bb" "-cp" "test" "-m" "consumer.check" "snapshot"))}
+                       (shell "bb" "-cp" "test" "-m" "consumer.check" "local"))}
 
   test:clojars {:doc  "Run the suite against a release fetched from Clojars (empty local repo), on the JVM, bb and nbb. Arg: version"
                 :task (apply shell "bb" "-cp" "test" "-m" "consumer.check" "clojars" *command-line-args*)}
@@ -85,7 +85,7 @@
                            (fail "CHANGELOG.md has no \"##" ver "\" section")
                            :else (println "release-check: version" ver "is releasable")))}
 
-  install   {:doc  "Install the jar to ~/.m2 as com.github.franks42/nacljc 0.1.0-SNAPSHOT (local only; re-run after changes)"
+  install   {:doc  "Install the jar (build.clj's version) into ~/.m2 (re-run after changes)"
              :task (shell "clojure" "-T:build" "install")}
 
   lint      {:doc  "clj-kondo on every Clojure file"

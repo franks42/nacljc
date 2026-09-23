@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-09-23)
 
 First release. Before this, nacljc was a research repo named `sodium.cljc`.
 
