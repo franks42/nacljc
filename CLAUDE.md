@@ -66,7 +66,7 @@ Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
    `integration/signet-shim` passes signet's unmodified suite on the JVM
    (102/436, same as JCA) and on bb (93/415; JCA on bb: 16 errors).
    `bb test:signet`. Also moved into signet as `signet.impl.sodium` + the
-   `signet.impl` facade, on signet's branch `libsodium-backend` (unmerged).
+   `signet.impl` facade, merged into signet's main (PR #1, 0.7.0-SNAPSHOT).
 2. A cljc facade over FFI (clj/bb/nbb) and libsodium.js (Scittle).
 3. File the two libsodium.js observations upstream.
 4. Decide on secp256k1 (not in libsodium) and on distribution.

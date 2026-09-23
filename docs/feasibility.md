@@ -297,8 +297,8 @@ breaks nobody.
 
 1. ~~Build a libsodium backend behind signet's `signet.impl.jvm` functions
    and run signet's suite against it~~ **Done:** passes on the JVM (102/436)
-   and on bb (93/415). **Also done:** it now lives in signet itself (branch
-   `libsodium-backend`, not yet merged) as `signet.impl.sodium`, behind a
+   and on bb (93/415). **Also done:** it now lives in signet itself (PR #1,
+   merged to main 2026-09-23, build 0.7.0-SNAPSHOT) as `signet.impl.sodium`, behind a
    `signet.impl` facade that selects the backend once at load
    (`-Dsignet.backend` / `SIGNET_BACKEND`, default `jca`, loud failure
    instead of silent fallback). signet's own `test/signet/backend_parity.clj`
