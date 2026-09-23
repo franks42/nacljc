@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>sodium.cljc — Scittle + libsodium.js</title>
+  <!--
+    libsodium.js single-file browser build (WASM + JS fallback in one file),
+    loaded with a plain script tag — no bundler, no import map. The URL can
+    be overridden with ?lib=<url> (the runner uses this to test a local
+    build). Default: the 0.8.4 release, same as test/wasm.
+  -->
+  <script>
+    const lib = new URLSearchParams(location.search).get("lib") ||
+      "https://cdn.jsdelivr.net/gh/jedisct1/libsodium.js@0.8.4/dist/browsers-sumo/sodium.js";
+    window.sodiumLib = lib;
+    window.sodiumReady = new Promise(resolve => {
+      window.sodium = { onload: s => { window.sodium = s; resolve(s); } };
+    });
+    const tag = document.createElement("script");
+    tag.src = lib; tag.async = true;
+    tag.onerror = () => console.log("DONE load-error " + lib);
+    document.head.appendChild(tag);
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/scittle@0.8.33/dist/scittle.js"></script>
+</head>
+<body>
+<pre id="out">running…</pre>
+<script type="application/x-scittle">
+(ns browser-check
+  (:require [clojure.edn :as edn]))
+
+(def fails (atom 0))
+(defn log [& xs]
+  (let [s (apply str xs)]
+    (js/console.log s)
+    (set! (.-textContent (js/document.getElementById "out"))
+          (str (.-textContent (js/document.getElementById "out")) "\n" s))))
+(defn check [label ok]
+  (when-not ok (swap! fails inc))
+  (log (if ok "  ok  " "  FAIL") label))
+
+(defn concat-u8 [& as]
+  (let [o (js/Uint8Array. (reduce + (map #(.-length %) as)))]
+    (reduce (fn [off a] (.set o a off) (+ off (.-length a))) 0 as)
+    o))
+
+(defn hmac-available?
+  "The standard (non-sumo) build has no HMAC-SHA-256 at all."
+  [s]
+  (fn? (.-crypto_auth_hmacsha256_init s)))
+
+(defn hkdf-shim
+  "RFC 5869 over libsodium.js's streaming HMAC-SHA-256 (any key length),
+   for builds that do not export crypto_kdf_hkdf_sha256_* (0.8.4)."
+  [s ikm salt info len]
+  (let [hmac (fn [k data]
+               (let [st (.crypto_auth_hmacsha256_init s k)]
+                 (.crypto_auth_hmacsha256_update s st data)
+                 (.crypto_auth_hmacsha256_final s st)))
+        prk  (hmac (if (zero? (.-length salt)) (js/Uint8Array. 32) salt) ikm)]
+    (loop [t (js/Uint8Array. 0) out (js/Uint8Array. 0) i 1]
+      (if (>= (.-length out) len)
+        (.slice out 0 len)
+        (let [t' (hmac prk (concat-u8 t info (js/Uint8Array. #js [i])))]
+          (recur t' (concat-u8 out t') (inc i)))))))
+
+(defn native-hkdf?
+  "libsodium.js exports crypto_kdf_hkdf_sha256_* only after 0.8.4."
+  [s]
+  (fn? (.-crypto_kdf_hkdf_sha256_extract s)))
+
+(defn hkdf-native
+  "The native export types `info` (ctx) as a string, so it cannot express
+   binary info (RFC 5869 allows any bytes). Takes info as a string."
+  [s ikm salt info-str len]
+  (.crypto_kdf_hkdf_sha256_expand s len info-str (.crypto_kdf_hkdf_sha256_extract s salt ikm)))
+
+(defn run [s vectors]
+  (let [hex #(.to_hex s %) unhex #(.from_hex s %) utf8 #(.from_string s %)
+        {:keys [rfc xplatform]} vectors]
+    (log "libsodium.js " (.sodium_version_string s) " from " js/sodiumLib)
+    (log "HKDF: native export " (if (native-hkdf? s) "yes" "no") ", HMAC shim " (if (hmac-available? s) "yes" "no (no HMAC in this build)"))
+    (when-not (or (native-hkdf? s) (hmac-available? s))
+      (check "some HKDF available" false))
+    (let [{:keys [seed pk msg sig]} (:ed25519 rfc)
+          kp (.crypto_sign_seed_keypair s (unhex seed))]
+      (check "RFC 8032 public key" (= pk (hex (.-publicKey kp))))
+      (check "RFC 8032 signature" (= sig (hex (.crypto_sign_detached s (utf8 msg) (.-privateKey kp)))))
+      (check "RFC 8032 verify" (.crypto_sign_verify_detached s (unhex sig) (utf8 msg) (.-publicKey kp))))
+    (let [{:keys [scalar u out]} (:x25519 rfc)]
+      (check "RFC 7748 X25519" (= out (hex (.crypto_scalarmult s (unhex scalar) (unhex u))))))
+    (let [{:keys [key nonce ad pt ct]} (:aead rfc)]
+      (check "RFC 8439 ChaCha20-Poly1305"
+             (= ct (hex (.crypto_aead_chacha20poly1305_ietf_encrypt s (utf8 pt) (unhex ad) nil (unhex nonce) (unhex key))))))
+    (let [{:keys [ikm salt info len okm]} (:hkdf rfc)]
+      ;; binary info (f0..f9): only the shim can take it
+      (when (hmac-available? s)
+        (check "RFC 5869 HKDF, binary info (HMAC shim)" (= okm (hex (hkdf-shim s (unhex ikm) (unhex salt) (unhex info) len))))))
+    (let [v xplatform
+          kp (.crypto_sign_seed_keypair s (unhex (:seed v)))]
+      (check "xplatform signature" (= (:sig v) (hex (.crypto_sign_detached s (utf8 (:msg v)) (.-privateKey kp)))))
+      (check "xplatform Ed25519 -> X25519 pk" (= (:x-pk v) (hex (.crypto_sign_ed25519_pk_to_curve25519 s (.-publicKey kp)))))
+      (check "xplatform Ed25519 -> X25519 sk" (= (:x-sk v) (hex (.crypto_sign_ed25519_sk_to_curve25519 s (.-privateKey kp)))))
+      (check "xplatform X25519 DH" (= (:dh v) (hex (.crypto_scalarmult s (unhex (:x-sk v)) (unhex (:peer-x-pk v))))))
+      (check "xplatform AEAD" (= (:ct v) (hex (.crypto_aead_chacha20poly1305_ietf_encrypt s (utf8 (:pt v)) (utf8 (:ad v)) nil (unhex (:nonce v)) (unhex (:key v))))))
+      (when (hmac-available? s)
+        (check "xplatform HKDF (HMAC shim)" (= (:hkdf v) (hex (hkdf-shim s (unhex (:key v)) (js/Uint8Array. 0) (utf8 "signet/box/v1") 32)))))
+      (when (native-hkdf? s)
+        (check "xplatform HKDF (native export, string info)"
+               (= (:hkdf v) (hex (hkdf-native s (unhex (:key v)) (js/Uint8Array. 0) "signet/box/v1" 32))))))
+    (check "randombytes_buf distinct" (= 1000 (count (set (repeatedly 1000 #(hex (.randombytes_buf s 16)))))))
+    (log "DONE " @fails " failed")))
+
+(-> (js/Promise.all #js [js/sodiumReady
+                         (-> (js/fetch "/test/sodium/vectors.edn") (.then #(.text %)))])
+    (.then (fn [[s txt]] (run s (edn/read-string txt))))
+    (.catch (fn [e] (log "DONE error " (.-message e)))))
+</script>
+</body>
+</html>

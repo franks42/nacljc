@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "libsodium.js (WASM) known-answer check for sodium.cljc — run: nbb check.cljs",
+  "dependencies": {
+    "libsodium-wrappers-sumo": "0.8.4"
+  }
+}

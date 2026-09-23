@@ -1,0 +1,4 @@
+{;; babashka.ffi's own hooks (defcfn) come from .clj-kondo/imports/babashka/ffi,
+ ;; imported with: clj-kondo --lint "$(clojure -Spath)" --dependencies --copy-configs --skip-lint
+ :lint-as {sodium.core/with-arena clojure.core/fn
+           promesa.core/let      clojure.core/let}}

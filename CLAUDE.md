@@ -1,0 +1,70 @@
+# sodium.cljc — project guide
+
+Research repo, created 2026-09-23. It tests whether **libsodium** can be the
+single crypto engine for Clojure on JVM, babashka, nbb and the browser.
+There is no GitHub remote yet; the user plans to make this a repo later.
+
+Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
+`README.md` has the requirements table (minimum and tested versions).
+
+## Context
+
+- The consumer is **signet** (`../signet`): Ed25519/X25519 signing and
+  encryption. It runs on JVM and bb only (every `:cljs` branch throws), and
+  its JCA seed→public-key trick fails on bb.
+- It is built on **canonical-edn** (`../canonical-edn`) and **uuidv7**
+  (`../uuidv7.cljc`).
+- signet's 2026-09 review findings (trust model, key-store growth,
+  ephemeral key retention, nonce reuse on stale session state) are in the
+  Claude memory `signet-review-2026-09` for the canonical-edn project.
+- The user has local clones of `../libsodium` and `../libsodium.js`, used to
+  read randomness code and wrapper definitions.
+
+## Rules of the road
+
+- **Use Homebrew's libsodium** (`brew install libsodium`; tested 1.0.22).
+  `core.cljc` looks in `/opt/homebrew/opt/libsodium/lib` first.
+- **Document requirements.** Any new tool or version dependency goes into
+  the README table, with a minimum and the version actually tested.
+- **Test every runtime, the browser (Scittle) included:**
+  `bb test:all` covers bb, JVM, nbb, WASM on Node, Scittle in headless
+  Chromium, lint and fmt. `bb test:jca` needs `../signet`.
+- **Lint and format every file.** A user-level Claude Code hook
+  (`~/.claude/hooks/clj-lint.sh`) runs cljfmt and clj-kondo after edits.
+  `bb lint` and `bb fmt` cover `src`, `test`, `bb.edn` and `deps.edn`.
+- **Failing-first.** New tests must be shown to fail on bad input (e.g. a
+  corrupted vector) before they count.
+- Mark claims in the docs as **[verified]**, **[source]** or
+  **[inference]**.
+
+## Gotchas found so far
+
+- `babashka.ffi` returns `byte[]` on JVM/bb and `Int8Array` on nbb.
+- nbb has no `with-open` — use the `with-arena` macro in `core.cljc`.
+- The JVM needs JDK 25+ (JDK 21 fails) and `--enable-native-access=ALL-UNNAMED`
+  (set in the `:test` alias).
+- A bb task that calls `(System/exit 0)` ends a whole `bb test:all` run.
+  Exit only on failure.
+- Scittle has no `cljs.reader`. Use `clojure.edn`.
+- libsodium.js 0.8.4: use **sumo** (standard has no HMAC/SHA-256/HKDF). HKDF
+  is not exported (shim in the tests). The upcoming export types `info` as a
+  UTF-8 string, so lone surrogates collide with U+FFFD and differ from the
+  JVM's `?`. **Facade rule: KDF/AEAD contexts are bytes, never strings.**
+  See "HKDF in libsodium and libsodium.js" in docs/feasibility.md.
+- libsodium reads fixed-size inputs blindly: every key, seed, signature and
+  nonce must be length-checked before the FFI call (`check-len!`), or a
+  short array makes it read past the allocation. `verify?` returns false on
+  bad sizes (untrusted input).
+- clj-kondo: the `defcfn` hooks are imported into `.clj-kondo/imports`.
+  `with-arena` lints as `fn`, and promesa's `p/let` as `let`.
+
+## Next steps (from the feasibility doc)
+
+1. ~~libsodium backend behind signet's `signet.impl.jvm` functions~~ Done:
+   `integration/signet-shim` passes signet's unmodified suite on the JVM
+   (102/436, same as JCA) and on bb (93/415; JCA on bb: 16 errors).
+   `bb test:signet`. Also moved into signet as `signet.impl.sodium` + the
+   `signet.impl` facade, on signet's branch `libsodium-backend` (unmerged).
+2. A cljc facade over FFI (clj/bb/nbb) and libsodium.js (Scittle).
+3. File the two libsodium.js observations upstream.
+4. Decide on secp256k1 (not in libsodium) and on distribution.

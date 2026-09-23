@@ -1,0 +1,86 @@
+{:rfc
+ {:ed25519
+  {:source "RFC 8032 §7.1 TEST 1",
+   :seed
+   "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+   :pk
+   "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+   :msg "",
+   :sig
+   "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"},
+  :x25519
+  {:source "RFC 7748 §5.2, first vector",
+   :scalar
+   "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4",
+   :u
+   "e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c",
+   :out
+   "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552"},
+  :aead
+  {:source "RFC 8439 §2.8.2",
+   :key
+   "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+   :nonce "070000004041424344454647",
+   :ad "50515253c0c1c2c3c4c5c6c7",
+   :pt
+   "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.",
+   :ct
+   "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b61161ae10b594f09e26a7e902ecbd0600691"},
+  :hkdf
+  {:source "RFC 5869 A.1 (Test Case 1)",
+   :ikm "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+   :salt "000102030405060708090a0b0c",
+   :info "f0f1f2f3f4f5f6f7f8f9",
+   :len 42,
+   :okm
+   "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"},
+  :sha256
+  {:source "FIPS 180-2, SHA-256 of 'abc'",
+   :msg "abc",
+   :digest
+   "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+  :hmac-sha256
+  [{:source "RFC 4231 test case 1",
+    :key "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+    :data "Hi There",
+    :mac
+    "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"}
+   {:source
+    "RFC 4231 test case 6 (131-byte key, larger than the block size)",
+    :key
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    :data "Test Using Larger Than Block-Size Key - Hash Key First",
+    :mac
+    "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"}],
+  :x25519-base
+  {:source "RFC 7748 §6.1 (Alice's key pair)",
+   :sk
+   "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+   :pk
+   "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"}},
+ :xplatform
+ {:dh
+  "b56138ad241960171c76273df6634f09ce469acc28bc81439b5c8c231819ff5a",
+  :pt "hello signet",
+  :pk
+  "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  :key
+  "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  :x-pk
+  "4701d08488451f545a409fb58ae3e58581ca40ac3f7f114698cd71deac73ca01",
+  :peer-x-pk
+  "5bccd484527714f28eb6b6fa9e43feabae73eab192aef1e7d59d2111343d7b70",
+  :msg "canonical-edn bytes to sign",
+  :source
+  "Fixed inputs; native libsodium 1.0.22, signet's JCA backend and libsodium.js 0.8.4 all agree",
+  :seed
+  "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  :hkdf
+  "1d198ae4ecbfaa674eb96780e30f8cf41d1fd6ccac0fd541905b2009ea0f1452",
+  :sig
+  "f3f33b5897ca04d86b8d99085e00b015d759b9d2b2a7f9b7a1e573f482adcc4bd5d1c5c3550be0914283e9a5e86bd320cd41fe4c24373dafa6da2d93bee2b40f",
+  :x-sk
+  "3894eea49c580aef816935762be049559d6d1440dede12e6a125f1841fff8e6f",
+  :ad "aad",
+  :nonce "000102030405060708090a0b",
+  :ct "b85fa553ce083dbfbd64de98da24e0881bd254e43129a357434c431f"}}

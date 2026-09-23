@@ -1,0 +1,71 @@
+{:paths ["src" "test"]
+ :tasks
+ {test:bb   {:doc  "Run the vector tests on babashka"
+             :task (do (require 'clojure.test 'sodium.core-test)
+                       (let [r (clojure.test/run-tests 'sodium.core-test)]
+                         ;; exit only on failure: exiting 0 would end test:all here
+                         (when (pos? (+ (:fail r) (:error r))) (System/exit 1))))}
+
+  test:jvm  {:doc  "Run the vector tests on JVM Clojure (JDK 25+)"
+             :task (shell "clojure" "-M:test" "-e"
+                          (str "(require 'clojure.test 'sodium.core-test)"
+                               "(let [r (clojure.test/run-tests 'sodium.core-test)]"
+                               "  (System/exit (if (pos? (+ (:fail r) (:error r))) 1 0)))"))}
+
+  test:nbb  {:doc  "Run the vector tests on nbb (Node 26+ node:ffi)"
+             :task (shell "nbb" "-cp" "src:test" "-e"
+                          "(require 'cljs.test 'sodium.core-test) (cljs.test/run-tests 'sodium.core-test)")}
+
+  test:wasm {:doc  "Check libsodium.js (WASM) against the same vectors (needs npm install in test/wasm)"
+             :task (shell {:dir "test/wasm"} "nbb" "check.cljs")}
+
+  test:browser {:doc  "Scittle + libsodium.js in headless Chromium (needs npm install in test/browser; network). Optional arg: a libsodium.js browser build URL or path"
+                :task (apply shell {:dir "test/browser"} "node" "run.mjs" *command-line-args*)}
+
+  test:jca  {:doc  "Cross-check against signet's JCA backend (needs ../signet)"
+             :task (do (shell "bb" "-cp" "src:test:../signet/src" "-m" "sodium.jca-crosscheck")
+                       (shell "clojure" "-Sdeps"
+                              "{:aliases {:signet {:extra-paths [\"../signet/src\"]}}}"
+                              "-M:test:signet" "-m" "sodium.jca-crosscheck"))}
+
+  ;; signet's unmodified test suite on libsodium (shim ahead of signet's
+  ;; src) and, as the oracle, on signet's own JCA backend. Needs ../signet.
+  ;; The JVM runs pick up signet's own deps.edn via :local/root.
+  test:signet-jvm {:doc  "signet's test suite on the JVM, backend = libsodium"
+                   :task (shell "clojure" "-Sdeps"
+                                (str "{:paths [\"integration/signet-shim\" \"src\" \"integration\" \"../signet/test\"]"
+                                     " :deps {signet/signet {:local/root \"../signet\"}"
+                                     "        org.babashka/ffi {:mvn/version \"0.1.2\"}}}")
+                                "-J--enable-native-access=ALL-UNNAMED"
+                                "-M" "-m" "sodium.signet-suite" "libsodium")}
+
+  test:signet-jca {:doc  "signet's test suite on the JVM, backend = signet's own JCA (oracle)"
+                   :task (shell "clojure" "-Sdeps"
+                                (str "{:paths [\"integration\" \"../signet/test\"]"
+                                     " :deps {signet/signet {:local/root \"../signet\"}}}")
+                                "-M" "-m" "sodium.signet-suite" "jca")}
+
+  test:signet-bb  {:doc  "signet's test suite on babashka, backend = libsodium"
+                   :task (let [cp (-> (shell {:out :string} "clojure" "-Spath" "-Sdeps"
+                                             (str "{:paths [] :deps {com.github.franks42/cedn {:mvn/version \"1.2.0\"}"
+                                                  " com.github.franks42/uuidv7 {:mvn/version \"0.5.0\"}}}"))
+                                      :out clojure.string/trim)]
+                           ;; versions mirror ../signet/bb.edn
+                           (shell "bb" "-cp" (str "integration/signet-shim:src:integration:../signet/src:../signet/test:" cp)
+                                  "-m" "sodium.signet-suite" "libsodium"))}
+
+  test:signet {:doc  "All signet runs: JCA oracle (JVM), libsodium (JVM), libsodium (bb). Needs ../signet"
+               :task (do (run 'test:signet-jca) (run 'test:signet-jvm) (run 'test:signet-bb))}
+
+  test:all  {:doc  "Every runtime (bb, JVM, nbb, WASM on Node, Scittle in Chromium) plus lint and format"
+             :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb)
+                       (run 'test:wasm) (run 'test:browser) (run 'lint) (run 'fmt))}
+
+  lint      {:doc  "clj-kondo on every Clojure file"
+             :task (shell "clj-kondo" "--lint" "src" "test" "integration" "bb.edn" "deps.edn")}
+
+  fmt       {:doc  "cljfmt check on every Clojure file"
+             :task (shell "cljfmt" "check" "src" "test" "integration" "bb.edn" "deps.edn")}
+
+  fmt:fix   {:doc  "cljfmt fix on every Clojure file"
+             :task (shell "cljfmt" "fix" "src" "test" "integration" "bb.edn" "deps.edn")}}}

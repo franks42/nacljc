@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Headless Scittle + libsodium.js browser check for sodium.cljc — run: node run.mjs [lib-url-or-path]",
+  "devDependencies": {
+    "playwright": "1.58.2"
+  }
+}
