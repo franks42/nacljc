@@ -134,3 +134,16 @@
       (let [k (b 32) n (b 12)]
         (is (= (hex (na/aead-encrypt k n msg nil))
                (hex (na/aead-encrypt k n msg (bytes-from [])))))))))
+
+;; ---- the loaded libsodium must be new enough ----
+
+(deftest minimum-version-check
+  (testing "version>=? compares release versions numerically"
+    (is (true? (na/version>=? "1.0.19" [1 0 19])))
+    (is (true? (na/version>=? "1.0.22" [1 0 19])))
+    (is (true? (na/version>=? "1.1.0" [1 0 19])))
+    (is (false? (na/version>=? "1.0.18" [1 0 19])) "Ubuntu 24.04's libsodium: no HKDF")
+    (is (false? (na/version>=? "1.0.9" [1 0 19])) "numeric, not lexicographic")
+    (is (false? (na/version>=? "garbage" [1 0 19]))))
+  (testing "the loaded library passes"
+    (is (na/version>=? (na/version-string) na/minimum-version))))

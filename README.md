@@ -32,7 +32,7 @@ own.
 
 | Component | Minimum | Tested | Notes |
 |---|---|---|---|
-| libsodium (native) | **1.0.19** | 1.0.22 (Homebrew) | 1.0.19 added HKDF. macOS: `brew install libsodium`. On Linux, check your distribution's version with `pkg-config --modversion libsodium`, since some ship an older one. |
+| libsodium (native) | **1.0.19** | 1.0.22 (Homebrew) | 1.0.19 added HKDF; `sodium.core` checks the version at load and throws `::libsodium-too-old` for anything older. macOS: `brew install libsodium`. On Linux, check your distribution's version with `pkg-config --modversion libsodium`, since some ship an older one. |
 | JDK (JVM Clojure) | **25** | 25.0.3 (Temurin) | `org.babashka/ffi` needs JDK 25+. On 21.0.11 it fails with `ClassNotFoundException: java.lang.classfile.ClassBuilder`. Run with `--enable-native-access=ALL-UNNAMED` (the `:test` alias sets it). Without it, JDK 25 warns that native calls "will be blocked in a future release". |
 | `org.babashka/ffi` (JVM only) | 0.1.2 | 0.1.2 | Built into bb and nbb. Experimental. |
 | Clojure CLI | — | 1.12.6 | |
