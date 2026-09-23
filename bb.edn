@@ -61,11 +61,14 @@
              :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb)
                        (run 'test:wasm) (run 'test:browser) (run 'lint) (run 'fmt))}
 
+  install   {:doc  "Install the jar to ~/.m2 as com.github.franks42/sodium 0.1.0-SNAPSHOT (local only; re-run after changes)"
+             :task (shell "clojure" "-T:build" "install")}
+
   lint      {:doc  "clj-kondo on every Clojure file"
-             :task (shell "clj-kondo" "--lint" "src" "test" "integration" "bb.edn" "deps.edn")}
+             :task (shell "clj-kondo" "--lint" "src" "test" "integration" "build.clj" "bb.edn" "deps.edn")}
 
   fmt       {:doc  "cljfmt check on every Clojure file"
-             :task (shell "cljfmt" "check" "src" "test" "integration" "bb.edn" "deps.edn")}
+             :task (shell "cljfmt" "check" "src" "test" "integration" "build.clj" "bb.edn" "deps.edn")}
 
   fmt:fix   {:doc  "cljfmt fix on every Clojure file"
-             :task (shell "cljfmt" "fix" "src" "test" "integration" "bb.edn" "deps.edn")}}}
+             :task (shell "cljfmt" "fix" "src" "test" "integration" "build.clj" "bb.edn" "deps.edn")}}}

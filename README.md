@@ -57,7 +57,16 @@ bb test:jca       # random-input cross-check against signet's JCA backend (needs
 bb test:signet    # signet's own test suite: JCA oracle (JVM), libsodium (JVM), libsodium (bb)
                   #   (needs ../signet; also test:signet-jca / test:signet-jvm / test:signet-bb)
 bb test:all       # everything except test:jca and test:signet, plus lint and format
+bb install        # install com.github.franks42/sodium 0.1.0-SNAPSHOT into ~/.m2 (local only)
 ```
+
+`bb install` builds a jar containing only `src/` (its pom depends on
+`org.babashka/ffi 0.1.2`) and installs it locally, so consumers such as
+signet can test the packaged artifact. Re-run it after every change, or
+consumers keep using the old jar. There is deliberately no deploy task:
+nothing is published to Clojars. On babashka, the jar's `org.babashka/ffi`
+dependency is ignored; bb always uses its built-in `babashka.ffi`
+(verified).
 
 `test:wasm` and `test:browser` need the network: npm, and jsdelivr for
 Scittle and libsodium.js.

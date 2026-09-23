@@ -2,7 +2,10 @@
  ;; babashka.ffi is built into bb and nbb; the JVM needs the library.
  :deps  {org.babashka/ffi {:mvn/version "0.1.2"}}
  :aliases
- {;; JDK 25+. Without --enable-native-access the JDK warns that native
+ {:build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.6"}}
+          :ns-default build}
+
+  ;; JDK 25+. Without --enable-native-access the JDK warns that native
   ;; calls "will be blocked in a future release".
   :test {:extra-paths ["test"]
          :jvm-opts    ["--enable-native-access=ALL-UNNAMED"]}}}
