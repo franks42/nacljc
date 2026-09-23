@@ -1,10 +1,16 @@
 # nacljc — project guide
 
-Research repo, created 2026-09-23. It tests whether **libsodium** can be the
-single crypto engine for Clojure on JVM, babashka, nbb and the browser.
-Public repo: https://github.com/franks42/nacljc (created 2026-09-23;
-no CI yet, and no release, since it is research code and not a published
-library).
+libsodium for Clojure on the JVM, babashka and nbb (babashka.ffi), with
+libsodium.js (WASM) tested for the browser. Started 2026-09-23 as a research
+repo; being prepared for its first Clojars release, 0.1.0.
+Public repo: https://github.com/franks42/nacljc.
+- CI: `.github/workflows/ci.yml` (lint, macOS, Linux). Every job calls bb
+  tasks only.
+- Releases: a `vX.Y.Z` tag triggers `release.yml`. It runs
+  `bb release-check` and the tests, deploys to Clojars, then runs
+  `bb test:clojars X.Y.Z` against the jar fetched back from Clojars.
+- **Hard rule: this ns is the C boundary.** Read the README's "Memory and
+  type safety" section and follow the hardening rules below for any change.
 
 Renamed from `sodium.cljc` on 2026-09-23 (namespaces `sodium.*` → `nacljc.*`,
 coordinates `com.github.franks42/sodium` → `com.github.franks42/nacljc`),

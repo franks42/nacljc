@@ -1,16 +1,16 @@
 (ns build
-  "Build script for nacljc — LOCAL installs only.
+  "Build script for nacljc.
 
    Usage:
      clojure -T:build jar      ; target/nacljc.jar
-     clojure -T:build install  ; install to ~/.m2 as com.github.franks42/nacljc 0.1.0-SNAPSHOT
-     clojure -T:build clean
-
-   There is deliberately no deploy: this is research code. The snapshot
-   exists so consumers (signet) can test the packaged jar, as a real user
-   would, before anything is published. Re-run install after every change —
-   consumers keep using the old jar until you do."
-  (:require [clojure.tools.build.api :as b]))
+     clojure -T:build install  ; install into ~/.m2 (re-run after every change:
+                               ; consumers keep using the old jar until you do)
+     clojure -T:build deploy   ; publish to Clojars (the release workflow does
+                               ; this for a vX.Y.Z tag; needs CLOJARS_USERNAME
+                               ; and CLOJARS_PASSWORD)
+     clojure -T:build clean"
+  (:require [clojure.tools.build.api :as b]
+            [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.franks42/nacljc)
 (def version "0.1.0-SNAPSHOT")
@@ -31,7 +31,7 @@
                 :version   version
                 :basis     @basis
                 :src-dirs  ["src"]
-                :pom-data  [[:description "libsodium for Clojure on JVM, babashka and nbb via babashka.ffi (research)"]
+                :pom-data  [[:description "libsodium for Clojure on the JVM, babashka and nbb via babashka.ffi, hardened at the C boundary. NaCl-aligned, not NaCl."]
                             [:url "https://github.com/franks42/nacljc"]
                             [:licenses
                              [:license
@@ -39,7 +39,9 @@
                               [:url "https://www.eclipse.org/legal/epl-2.0/"]]]
                             [:scm
                              [:url "https://github.com/franks42/nacljc"]
-                             [:connection "scm:git:https://github.com/franks42/nacljc.git"]]]})
+                             [:connection "scm:git:https://github.com/franks42/nacljc.git"]
+                             [:developerConnection "scm:git:ssh://git@github.com/franks42/nacljc.git"]
+                             [:tag (str "v" version)]]]})
   (b/jar {:class-dir class-dir :jar-file jar-file})
   (println "Created" jar-file))
 
@@ -49,3 +51,9 @@
               :jar-file jar-file :class-dir class-dir})
   (println (format "Installed %s %s to ~/.m2/repository" lib version))
   (println (format "Use: %s {:mvn/version \"%s\"}" lib version)))
+
+(defn deploy [_]
+  (jar nil)
+  (dd/deploy {:installer :remote
+              :artifact  (b/resolve-path jar-file)
+              :pom-file  (b/pom-path {:lib lib :class-dir class-dir})}))

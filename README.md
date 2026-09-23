@@ -40,6 +40,34 @@ Status: **pre-release.** The API below is what 0.1.0 will ship.
 [`docs/feasibility.md`](docs/feasibility.md) has the research findings and
 the evidence.
 
+## Installation
+
+nacljc needs **libsodium >= 1.0.19** installed natively (`brew install
+libsodium`; on Linux see "Requirements", since Debian and Ubuntu ship
+1.0.18).
+
+```clojure
+;; deps.edn (JVM, JDK 25+)
+{:deps    {com.github.franks42/nacljc {:mvn/version "0.1.0"}}
+ :aliases {:run {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
+
+;; bb.edn (babashka 1.13.220+; bb ignores the org.babashka/ffi
+;; dependency and uses its built-in babashka.ffi)
+{:deps {com.github.franks42/nacljc {:mvn/version "0.1.0"}}}
+
+;; nbb.edn (nbb 1.6.213+ on Node 26+; nbb resolves :deps through bb,
+;; so bb must be installed)
+{:deps {com.github.franks42/nacljc {:mvn/version "0.1.0"}}}
+```
+
+```clojure
+(require '[nacljc.core :as na])
+(let [seed (na/random-bytes 32)
+      pk   (na/ed25519-public-key seed)
+      msg  (.getBytes "hello" "UTF-8")]
+  (na/ed25519-verify? pk msg (na/ed25519-sign seed msg)))   ;=> true
+```
+
 ## API
 
 Everything is in `nacljc.core`. Byte arrays in and out: `byte[]` on the JVM
@@ -190,16 +218,23 @@ bb test:jca       # random-input cross-check against signet's JCA backend (needs
 bb test:signet    # signet's own test suite: JCA oracle (JVM), libsodium (JVM), libsodium (bb)
                   #   (needs ../signet; also test:signet-jca / test:signet-jvm / test:signet-bb)
 bb test:all       # everything except test:jca and test:signet, plus library loading, lint and format
-bb install        # install com.github.franks42/nacljc 0.1.0-SNAPSHOT into ~/.m2 (local only)
+bb install        # install the jar (build.clj's version) into ~/.m2
+bb test:jar       # the suite against the installed jar, from a scratch project: JVM, bb, nbb
+bb test:clojars V # the same against release V fetched from Clojars
 ```
 
 `bb install` builds a jar containing only `src/` (its pom depends on
-`org.babashka/ffi 0.1.2`) and installs it locally, so consumers such as
-signet can test the packaged artifact. Re-run it after every change, or
-consumers keep using the old jar. There is deliberately no deploy task:
-nothing is published to Clojars. On babashka, the jar's `org.babashka/ffi`
+`org.babashka/ffi 0.1.2`) and installs it locally. Re-run it after every
+change, or consumers such as signet keep using the old jar. `bb test:jar`
+runs the whole suite against that jar from a scratch project with no
+`src/`, on the JVM, bb and nbb. On babashka, the jar's `org.babashka/ffi`
 dependency is ignored; bb always uses its built-in `babashka.ffi`
 (verified).
+
+Releases: push a `vX.Y.Z` tag. The release workflow checks the version
+(`bb release-check`) and runs the tests. It then deploys to Clojars, runs
+the suite again against the jar fetched back from Clojars (`bb test:clojars
+X.Y.Z`), and creates the GitHub release from the CHANGELOG section.
 
 `test:wasm` and `test:browser` need the network: npm, and jsdelivr for
 Scittle and libsodium.js.

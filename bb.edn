@@ -1,6 +1,8 @@
 {:paths ["src" "test"]
  :tasks
- {test:bb   {:doc  "Run the vector tests on babashka"
+ {:requires ([clojure.string :as str])
+
+  test:bb   {:doc  "Run the vector tests on babashka"
              :task (do (require 'clojure.test 'nacljc.core-test)
                        (let [r (clojure.test/run-tests 'nacljc.core-test)]
                          ;; exit only on failure: exiting 0 would end test:all here
@@ -63,6 +65,25 @@
   test:all  {:doc  "Every runtime (bb, JVM, nbb, WASM on Node, Scittle in Chromium), library loading, lint and format"
              :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb) (run 'test:loading)
                        (run 'test:wasm) (run 'test:browser) (run 'lint) (run 'fmt))}
+
+  test:jar  {:doc  "Install the jar, then run the suite against it from a scratch project (no src/) on the JVM, bb and nbb"
+             :task (do (shell "clojure" "-P") ; fresh machines: tools.build cannot fetch deps itself
+                       (shell "clojure" "-T:build" "install")
+                       (shell "bb" "-cp" "test" "-m" "consumer.check" "snapshot"))}
+
+  test:clojars {:doc  "Run the suite against a release fetched from Clojars (empty local repo), on the JVM, bb and nbb. Arg: version"
+                :task (apply shell "bb" "-cp" "test" "-m" "consumer.check" "clojars" *command-line-args*)}
+
+  release-check {:doc  "Refuse to release unless build.clj's version is a plain X.Y.Z and CHANGELOG.md has a section for it"
+                 :task (let [ver (second (re-find (re-pattern "\\(def version \"([^\"]+)\"\\)") (slurp "build.clj")))
+                             fail (fn [& msg] (apply println "ERROR:" msg) (System/exit 1))]
+                         (cond
+                           (nil? ver) (fail "cannot parse the version from build.clj")
+                           (not (re-matches (re-pattern "\\d+\\.\\d+\\.\\d+") ver))
+                           (fail "version" (pr-str ver) "is not a stable X.Y.Z")
+                           (not (str/includes? (slurp "CHANGELOG.md") (str "## " ver)))
+                           (fail "CHANGELOG.md has no \"##" ver "\" section")
+                           :else (println "release-check: version" ver "is releasable")))}
 
   install   {:doc  "Install the jar to ~/.m2 as com.github.franks42/nacljc 0.1.0-SNAPSHOT (local only; re-run after changes)"
              :task (shell "clojure" "-T:build" "install")}

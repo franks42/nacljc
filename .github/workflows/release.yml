@@ -1,0 +1,105 @@
+name: release
+
+# On a vX.Y.Z tag: check, test, deploy to Clojars, then run the whole suite
+# against the jar fetched back from Clojars (empty local repository) on the
+# JVM, bb and nbb, and only then create the GitHub release.
+#
+# Required secrets: CLOJARS_USERNAME, CLOJARS_PASSWORD (a Clojars deploy
+# token for the com.github.franks42 group).
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  NBB_VERSION: 1.6.213
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: DeLaGuardo/setup-clojure@13.6.0
+        with:
+          bb: 'latest'
+          cli: 'latest'
+          clj-kondo: 'latest'
+          cljfmt: 'latest'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '26'
+
+      - name: Install libsodium (Homebrew) and nbb
+        run: |
+          brew install libsodium
+          npm install -g "nbb@${NBB_VERSION}"
+
+      - name: Version from the tag
+        id: ver
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse a non-stable version or a missing CHANGELOG entry
+        run: bb release-check
+
+      - name: build.clj version must match the tag
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          BUILD_VER=$(grep -oE '\(def version "[^"]+"' build.clj | grep -oE '"[^"]+"$' | tr -d '"')
+          if [ "$BUILD_VER" != "$VERSION" ]; then
+            echo "::error::Tag is v${VERSION} but build.clj says ${BUILD_VER}"
+            exit 1
+          fi
+
+      - name: Prefetch deps
+        run: clojure -P
+
+      - name: Lint and format
+        run: bb lint && bb fmt
+
+      - name: Suite on bb, the JVM and nbb; library loading
+        run: bb test:bb && bb test:jvm && bb test:nbb && bb test:loading
+
+      - name: Publish to Clojars
+        env:
+          CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
+          CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
+        run: clojure -T:build deploy
+
+      - name: Wait for Clojars
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sfL "https://repo.clojars.org/com/github/franks42/nacljc/$VERSION/nacljc-$VERSION.jar" -o /dev/null; then
+              echo "Clojars serves nacljc $VERSION"; exit 0
+            fi
+            echo "Waiting for Clojars... ($i/30)"; sleep 10
+          done
+          echo "::error::Clojars did not serve the jar within 5 minutes"; exit 1
+
+      - name: Suite against the jar from Clojars (JVM, bb, nbb)
+        run: bb test:clojars "${{ steps.ver.outputs.version }}"
+
+      - name: GitHub release with the CHANGELOG section as notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          awk -v v="## $VERSION" '$0 ~ "^"v {on=1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md
