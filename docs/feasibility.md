@@ -78,9 +78,11 @@ trips, the key store and verification of open chains. libsodium's
 `crypto_sign_seed_keypair` removes the trick, so signet runs in full on bb
 for the first time. signet's own `bb smoke` covers 9 tests.
 
-The signet runs use signet's own pinned dependencies (cedn 1.2.0, uuidv7
-0.5.0, Bouncy Castle 1.78.1) through `:local/root`, so the backend is the
-only thing that changes.
+The signet runs use signet's own pinned dependencies through
+`:local/root`, so the backend is the only thing that changes. The results
+held at the original pins (cedn 1.2.0, uuidv7 0.5.0, Bouncy Castle 1.78.1)
+and still hold after the bump on signet's branch (cedn 1.5.2, uuidv7 0.7.1,
+Bouncy Castle 1.86). `test:signet-bb` mirrors signet's bb pins.
 
 ### Memory safety: length-check every fixed-size input [verified]
 

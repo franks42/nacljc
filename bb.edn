@@ -47,8 +47,8 @@
 
   test:signet-bb  {:doc  "signet's test suite on babashka, backend = libsodium"
                    :task (let [cp (-> (shell {:out :string} "clojure" "-Spath" "-Sdeps"
-                                             (str "{:paths [] :deps {com.github.franks42/cedn {:mvn/version \"1.2.0\"}"
-                                                  " com.github.franks42/uuidv7 {:mvn/version \"0.5.0\"}}}"))
+                                             (str "{:paths [] :deps {com.github.franks42/cedn {:mvn/version \"1.5.2\"}"
+                                                  " com.github.franks42/uuidv7 {:mvn/version \"0.7.1\"}}}"))
                                       :out clojure.string/trim)]
                            ;; versions mirror ../signet/bb.edn
                            (shell "bb" "-cp" (str "integration/signet-shim:src:integration:../signet/src:../signet/test:" cp)
