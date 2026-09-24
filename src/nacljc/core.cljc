@@ -194,35 +194,35 @@
              bs
              (js/Int8Array. (.-buffer bs) (.-byteOffset bs) (.-length bs)))))
 
-(defn- bad-input! [what expected x]
+(defn- throw-bad-input [what expected x]
   (throw (ex-info (str "nacljc: " what " must be " expected ", got " (type-name x))
                   {:type ::bad-input :what what :expected expected :got (type-name x)})))
 
-(defn- bad-length! [what expected actual]
+(defn- throw-bad-length [what expected actual]
   (throw (ex-info (str "nacljc: " what " must be " expected " bytes, got " actual)
                   {:type ::bad-length :what what :expected expected :actual actual})))
 
-(defn- need-bytes!
+(defn- check-bytes
   "x, checked to be a byte array (of exactly n bytes, if n is given), as
    the platform byte array. Throws ::bad-input or ::bad-length."
   ([x what]
-   (when-not (byte-array? x) (bad-input! what "a byte array" x))
+   (when-not (byte-array? x) (throw-bad-input what "a byte array" x))
    (as-int8 x))
   ([x n what]
-   (let [bs (need-bytes! x what)]
-     (when-not (= n (alength bs)) (bad-length! what n (alength bs)))
+   (let [bs (check-bytes x what)]
+     (when-not (= n (alength bs)) (throw-bad-length what n (alength bs)))
      bs)))
 
-(defn- optional-bytes!
-  "Like need-bytes!, but nil means empty."
+(defn- check-optional-bytes
+  "Like check-bytes, but nil means empty."
   [x what]
-  (if (nil? x) (empty-bytes) (need-bytes! x what)))
+  (if (nil? x) (empty-bytes) (check-bytes x what)))
 
-(defn- need-count!
+(defn- check-count
   "n, checked to be an integer in lo..hi. Throws ::bad-input or ::bad-length."
   [n lo hi what]
-  (when-not (integer? n) (bad-input! what "an integer" n))
-  (when-not (<= lo n hi) (bad-length! what (str lo ".." hi) n))
+  (when-not (integer? n) (throw-bad-input what "an integer" n))
+  (when-not (<= lo n hi) (throw-bad-length what (str lo ".." hi) n))
   #?(:clj (long n) :cljs n))
 
 ;; ---------------------------------------------------------------------------
@@ -271,7 +271,7 @@
 (defmacro ^:private with-scratch
   "Evaluate body with s bound to a fresh scratch arena. Every buffer in it
    is wiped and the arena released when body returns or throws. Nothing
-   allocated in it may escape: copy results out with read!."
+   allocated in it may escape: copy results out with read-bytes."
   [[s] & body]
   `(let [~s (open-scratch)]
      (try ~@body (finally (release! ~s)))))
@@ -283,12 +283,12 @@
     (when (pos? (alength bs)) (ffi/write-array p :char bs))
     p))
 
-(defn- read!
+(defn- read-bytes
   "Copy n bytes out of native memory into a new platform byte array."
   [p n]
   (if (zero? n) (empty-bytes) (ffi/read-array p :char n)))
 
-(defn- call-ok!
+(defn- check-rc
   "Throw ::call-failed unless the libsodium call returned 0."
   [rc c-fn]
   (when-not (zero? rc)
@@ -298,7 +298,7 @@
   "Ed25519 public key and 64-byte secret key for seed, in scratch memory."
   [scratch seed]
   (let [pk (alloc! scratch 32) sk (alloc! scratch 64)]
-    (call-ok! (-sign-seed-keypair pk sk (in! scratch seed)) "crypto_sign_seed_keypair")
+    (check-rc (-sign-seed-keypair pk sk (in! scratch seed)) "crypto_sign_seed_keypair")
     [pk sk]))
 
 ;; ---------------------------------------------------------------------------
@@ -310,20 +310,20 @@
 (defn random-bytes
   "n bytes (n >= 0) from libsodium's CSPRNG (the OS generator natively)."
   [n]
-  (let [n (need-count! n 0 max-count "random-bytes n")]
+  (let [n (check-count n 0 max-count "random-bytes n")]
     (if (zero? n)
       (empty-bytes)
       (with-scratch [s]
         (let [p (alloc! s n)]
           (-randombytes-buf p n)
-          (read! p n))))))
+          (read-bytes p n))))))
 
 (defn memzero!
   "Overwrite byte array bs with zeros, in place. Returns nil. Use it for
    secrets you no longer need. The JVM's garbage collector may already have
    copied the array elsewhere; this clears only the array you hold."
   [bs]
-  (let [bs (need-bytes! bs "memzero! argument")]
+  (let [bs (check-bytes bs "memzero! argument")]
     #?(:clj  (java.util.Arrays/fill ^bytes bs (byte 0))
        :cljs (.fill bs 0))
     nil))
@@ -333,8 +333,8 @@
    taken does not depend on the contents (sodium_memcmp). Different lengths
    return false at once: lengths are not treated as secret."
   [a b]
-  (let [a (need-bytes! a "constant-time-equal? a")
-        b (need-bytes! b "constant-time-equal? b")
+  (let [a (check-bytes a "constant-time-equal? a")
+        b (check-bytes b "constant-time-equal? b")
         n (alength a)]
     (cond
       (not= n (alength b)) false
@@ -345,10 +345,10 @@
 (defn ed25519-public-key
   "Ed25519 public key (32 bytes) for a 32-byte seed."
   [seed]
-  (let [seed (need-bytes! seed 32 "Ed25519 seed")]
+  (let [seed (check-bytes seed 32 "Ed25519 seed")]
     (with-scratch [s]
       (let [[pk _] (seed-keypair! s seed)]
-        (read! pk 32)))))
+        (read-bytes pk 32)))))
 
 (defn ed25519-sign
   "Ed25519 signature (64 bytes) of msg with the key for a 32-byte seed.
@@ -356,13 +356,13 @@
    native memory for each signature, so it never exists on the Clojure
    heap and its public-key half cannot be mismatched."
   [seed msg]
-  (let [seed (need-bytes! seed 32 "Ed25519 seed")
-        msg  (need-bytes! msg "message")]
+  (let [seed (check-bytes seed 32 "Ed25519 seed")
+        msg  (check-bytes msg "message")]
     (with-scratch [s]
       (let [[_ sk] (seed-keypair! s seed)
             sig    (alloc! s 64)]
-        (call-ok! (-sign-detached sig ffi/null (in! s msg) (alength msg) sk) "crypto_sign_detached")
-        (read! sig 64)))))
+        (check-rc (-sign-detached sig ffi/null (in! s msg) (alength msg) sk) "crypto_sign_detached")
+        (read-bytes sig 64)))))
 
 (defn ed25519-verify?
   "True if sig is a valid Ed25519 signature of msg under public key pk.
@@ -370,7 +370,7 @@
    64-byte array gives false, never an exception. msg must be a byte array
    (::bad-input otherwise)."
   [pk msg sig]
-  (let [msg (need-bytes! msg "message")]
+  (let [msg (check-bytes msg "message")]
     (boolean
      (and (byte-array? pk) (= 32 (alength pk))
           (byte-array? sig) (= 64 (alength sig))
@@ -383,118 +383,118 @@
    ::invalid-public-key for a point that is not on the curve or has small
    order."
   [pk]
-  (let [pk (need-bytes! pk 32 "Ed25519 public key")]
+  (let [pk (check-bytes pk 32 "Ed25519 public key")]
     (with-scratch [s]
       (let [o (alloc! s 32)]
         (when-not (zero? (-pk-to-curve25519 o (in! s pk)))
           (throw (ex-info "nacljc: not a valid Ed25519 public key"
                           {:type ::invalid-public-key :fn "crypto_sign_ed25519_pk_to_curve25519"})))
-        (read! o 32)))))
+        (read-bytes o 32)))))
 
 (defn ed25519->x25519-secret-key
   "X25519 secret key for the Ed25519 key with this 32-byte seed."
   [seed]
-  (let [seed (need-bytes! seed 32 "Ed25519 seed")]
+  (let [seed (check-bytes seed 32 "Ed25519 seed")]
     (with-scratch [s]
       (let [[_ sk] (seed-keypair! s seed)
             o      (alloc! s 32)]
-        (call-ok! (-sk-to-curve25519 o sk) "crypto_sign_ed25519_sk_to_curve25519")
-        (read! o 32)))))
+        (check-rc (-sk-to-curve25519 o sk) "crypto_sign_ed25519_sk_to_curve25519")
+        (read-bytes o 32)))))
 
 (defn x25519
   "X25519 shared secret (32 bytes) of our secret key and their public key.
    Throws ::low-order-point when the result is all zeros (their key has
    small order); libsodium returns -1 for it."
   [sk pk]
-  (let [sk (need-bytes! sk 32 "X25519 secret key")
-        pk (need-bytes! pk 32 "X25519 public key")]
+  (let [sk (check-bytes sk 32 "X25519 secret key")
+        pk (check-bytes pk 32 "X25519 public key")]
     (with-scratch [s]
       (let [o (alloc! s 32)]
         (when-not (zero? (-scalarmult o (in! s sk) (in! s pk)))
           (throw (ex-info "nacljc: X25519 with a low-order public key"
                           {:type ::low-order-point :fn "crypto_scalarmult_curve25519"})))
-        (read! o 32)))))
+        (read-bytes o 32)))))
 
 (defn x25519-public-key
   "X25519 public key (32 bytes) for a 32-byte secret key."
   [sk]
-  (let [sk (need-bytes! sk 32 "X25519 secret key")]
+  (let [sk (check-bytes sk 32 "X25519 secret key")]
     (with-scratch [s]
       (let [o (alloc! s 32)]
-        (call-ok! (-scalarmult-base o (in! s sk)) "crypto_scalarmult_curve25519_base")
-        (read! o 32)))))
+        (check-rc (-scalarmult-base o (in! s sk)) "crypto_scalarmult_curve25519_base")
+        (read-bytes o 32)))))
 
 (defn chacha20-poly1305-encrypt
   "ChaCha20-Poly1305 (IETF, RFC 8439): 32-byte key, 12-byte nonce,
    plaintext and associated data aad (nil means none). Returns ciphertext
    || 16-byte tag. Never reuse a nonce with the same key."
   [k nonce pt aad]
-  (let [k     (need-bytes! k 32 "ChaCha20-Poly1305 key")
-        nonce (need-bytes! nonce 12 "ChaCha20-Poly1305 nonce")
-        pt    (need-bytes! pt "plaintext")
-        aad   (optional-bytes! aad "associated data")
+  (let [k     (check-bytes k 32 "ChaCha20-Poly1305 key")
+        nonce (check-bytes nonce 12 "ChaCha20-Poly1305 nonce")
+        pt    (check-bytes pt "plaintext")
+        aad   (check-optional-bytes aad "associated data")
         n     (+ (alength pt) 16)]
     (with-scratch [s]
       (let [c (alloc! s n)]
-        (call-ok! (-aead-encrypt c ffi/null (in! s pt) (alength pt) (in! s aad) (alength aad)
+        (check-rc (-aead-encrypt c ffi/null (in! s pt) (alength pt) (in! s aad) (alength aad)
                                  ffi/null (in! s nonce) (in! s k))
                   "crypto_aead_chacha20poly1305_ietf_encrypt")
-        (read! c n)))))
+        (read-bytes c n)))))
 
 (defn chacha20-poly1305-decrypt
   "Inverse of chacha20-poly1305-encrypt. Throws ::auth-failed when the
    ciphertext, nonce, key or aad do not match; ::bad-length when the
    ciphertext is shorter than the 16-byte tag."
   [k nonce ct aad]
-  (let [k     (need-bytes! k 32 "ChaCha20-Poly1305 key")
-        nonce (need-bytes! nonce 12 "ChaCha20-Poly1305 nonce")
-        ct    (need-bytes! ct "ciphertext")
-        aad   (optional-bytes! aad "associated data")]
-    (when (< (alength ct) 16) (bad-length! "ciphertext" ">= 16" (alength ct)))
+  (let [k     (check-bytes k 32 "ChaCha20-Poly1305 key")
+        nonce (check-bytes nonce 12 "ChaCha20-Poly1305 nonce")
+        ct    (check-bytes ct "ciphertext")
+        aad   (check-optional-bytes aad "associated data")]
+    (when (< (alength ct) 16) (throw-bad-length "ciphertext" ">= 16" (alength ct)))
     (let [n (- (alength ct) 16)]
       (with-scratch [s]
         (let [m (alloc! s n)]
           (when-not (zero? (-aead-decrypt m ffi/null ffi/null (in! s ct) (alength ct)
                                           (in! s aad) (alength aad) (in! s nonce) (in! s k)))
             (throw (ex-info "nacljc: ChaCha20-Poly1305 authentication failed" {:type ::auth-failed})))
-          (read! m n))))))
+          (read-bytes m n))))))
 
 (defn hkdf-sha-256
   "HKDF-SHA-256 (RFC 5869), extract then expand: len bytes (1..8160) from
    input keying material ikm, with salt and info (nil means empty; an empty
    salt equals the RFC's default of 32 zero bytes)."
   [ikm salt info len]
-  (let [ikm  (need-bytes! ikm "HKDF ikm")
-        salt (optional-bytes! salt "HKDF salt")
-        info (optional-bytes! info "HKDF info")
-        len  (need-count! len 1 8160 "HKDF output length")]
+  (let [ikm  (check-bytes ikm "HKDF ikm")
+        salt (check-optional-bytes salt "HKDF salt")
+        info (check-optional-bytes info "HKDF info")
+        len  (check-count len 1 8160 "HKDF output length")]
     (with-scratch [s]
       (let [prk (alloc! s 32)
             o   (alloc! s len)]
-        (call-ok! (-hkdf-extract prk (in! s salt) (alength salt) (in! s ikm) (alength ikm))
+        (check-rc (-hkdf-extract prk (in! s salt) (alength salt) (in! s ikm) (alength ikm))
                   "crypto_kdf_hkdf_sha256_extract")
-        (call-ok! (-hkdf-expand o len (in! s info) (alength info) prk)
+        (check-rc (-hkdf-expand o len (in! s info) (alength info) prk)
                   "crypto_kdf_hkdf_sha256_expand")
-        (read! o len)))))
+        (read-bytes o len)))))
 
 (defn sha-256
   "SHA-256 digest (32 bytes) of data."
   [data]
-  (let [data (need-bytes! data "SHA-256 input")]
+  (let [data (check-bytes data "SHA-256 input")]
     (with-scratch [s]
       (let [o (alloc! s 32)]
-        (call-ok! (-hash-sha256 o (in! s data) (alength data)) "crypto_hash_sha256")
-        (read! o 32)))))
+        (check-rc (-hash-sha256 o (in! s data) (alength data)) "crypto_hash_sha256")
+        (read-bytes o 32)))))
 
 (defn hmac-sha-256
   "HMAC-SHA-256 (32 bytes) of data under key k, which may have any length."
   [k data]
-  (let [k    (need-bytes! k "HMAC key")
-        data (need-bytes! data "HMAC input")]
+  (let [k    (check-bytes k "HMAC key")
+        data (check-bytes data "HMAC input")]
     (with-scratch [s]
       (let [st (alloc! s (-hmacsha256-statebytes))
             o  (alloc! s 32)]
-        (call-ok! (-hmacsha256-init st (in! s k) (alength k)) "crypto_auth_hmacsha256_init")
-        (call-ok! (-hmacsha256-update st (in! s data) (alength data)) "crypto_auth_hmacsha256_update")
-        (call-ok! (-hmacsha256-final st o) "crypto_auth_hmacsha256_final")
-        (read! o 32)))))
+        (check-rc (-hmacsha256-init st (in! s k) (alength k)) "crypto_auth_hmacsha256_init")
+        (check-rc (-hmacsha256-update st (in! s data) (alength data)) "crypto_auth_hmacsha256_update")
+        (check-rc (-hmacsha256-final st o) "crypto_auth_hmacsha256_final")
+        (read-bytes o 32)))))

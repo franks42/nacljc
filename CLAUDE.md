@@ -67,14 +67,14 @@ Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
   JVM's `?`. **Facade rule: KDF/AEAD contexts are bytes, never strings.**
   See "HKDF in libsodium and libsodium.js" in docs/feasibility.md.
 - libsodium reads fixed-size inputs blindly: every input is type- and
-  length-checked before the FFI call (`need-bytes!`, `need-count!`), or a
+  length-checked before the FFI call (`check-bytes`, `check-count`), or a
   short array makes it read past the allocation. `ed25519-verify?` returns
   false on bad sizes (untrusted input). Tests assert rejected input
   allocates **no** native memory: a missing guard whose C call still
   answers correctly (an over-read) is otherwise invisible.
 - **Hardening rules for any new binding** (README "Memory and type
   safety"): check types and sizes first; allocate only through `alloc!`/`in!`
-  inside `with-scratch`; copy results out with `read!`; check the return
+  inside `with-scratch`; copy results out with `read-bytes`; check the return
   code; add the function to the public-API test, the bad-input table, the
   hygiene audit, and prove each guard by removing it.
 - Without the count check, `(random-bytes -1)` aborts the process inside
