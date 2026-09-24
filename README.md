@@ -188,7 +188,7 @@ What stays with the caller:
   after the last. `bb test:secrets` proves the protection in child
   processes: reading a secret's memory outside a call, or after
   destroying it, **faults** (bb and nbb crash; the JVM raises
-  `InternalError`), while the same read inside a call works. Removing the
+  `InternalError` on macOS and aborts on Linux), while the same read inside a call works. Removing the
   counter as an experiment crashed the JVM with SIGBUS when threads shared
   a secret.
 - **Clojure-side arrays are yours.** Arrays you pass in and get back live

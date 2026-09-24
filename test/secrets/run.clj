@@ -2,8 +2,9 @@
   "Secret memory is really inaccessible outside calls: in a child process, a
    read of a secret's memory outside an access window, or after destroying
    it, must fault, while the same read inside a window works. The fault
-   crashes bb and nbb (SIGSEGV/SIGBUS); the JVM turns it into
-   InternalError \"a fault occurred in an unsafe memory access operation\".
+   crashes bb and nbb (SIGSEGV/SIGBUS). The JVM turns it into
+   InternalError \"a fault occurred in an unsafe memory access operation\"
+   on macOS and aborts on Linux.
    Either way no byte is read. On bb, the JVM and nbb.
    Run from the repo root: bb test:secrets"
   (:require [babashka.process :as p]
