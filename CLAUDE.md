@@ -9,7 +9,7 @@ Public repo: https://github.com/franks42/nacljc.
 - Releases: a `vX.Y.Z` tag triggers `release.yml`. It runs
   `bb release-check` and the tests, deploys to Clojars, then runs
   `bb test:clojars X.Y.Z` against the jar fetched back from Clojars.
-- **0.2.0 (in progress):** secrets in guarded memory (`secret-*`,
+- **0.2.0 (released 2026-09-24):** secrets in guarded memory (`secret-*`,
   `with-secret`; no-access outside calls, a counter under a lock for
   threads), AEGIS-256, X-Wing (bound only if libsodium >= 1.0.22). Secret
   inputs give secret key outputs. `bb test:secrets` proves the fault.

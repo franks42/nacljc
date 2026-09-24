@@ -72,7 +72,7 @@ jobs:
         run: bb lint && bb fmt
 
       - name: Suite on bb, the JVM and nbb; library loading
-        run: bb test:bb && bb test:jvm && bb test:nbb && bb test:loading
+        run: bb test:bb && bb test:jvm && bb test:nbb && bb test:loading && bb test:secrets
 
       - name: Publish to Clojars
         env:
