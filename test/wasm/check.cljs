@@ -59,6 +59,12 @@
       (check "xplatform X25519 DH" (= (:dh v) (hex (.crypto_scalarmult s (unhex (:x-sk v)) (unhex (:peer-x-pk v))))))
       (check "xplatform AEAD" (= (:ct v) (hex (.crypto_aead_chacha20poly1305_ietf_encrypt s (utf8 (:pt v)) (utf8 (:ad v)) nil (unhex (:nonce v)) (unhex (:key v))))))
       (check "xplatform HKDF via HMAC shim" (= (:hkdf v) (hex (hkdf-sha256 (unhex (:key v)) (js/Uint8Array. 0) (utf8 "signet/box/v1") 32)))))
+    (let [{:keys [key nonce valid]} (:aegis256 vectors)]
+      (if (fn? (.-crypto_aead_aegis256_encrypt s))
+        (doseq [{:keys [tv ad msg ct tag]} valid]
+          (check (str "RFC 10032 AEGIS-256 TV" tv)
+                 (= (str ct tag) (hex (.crypto_aead_aegis256_encrypt s (unhex msg) (unhex ad) nil (unhex nonce) (unhex key))))))
+        (check "AEGIS-256 exported by this libsodium.js" false)))
     (check "randombytes_buf distinct" (= 1000 (count (set (repeatedly 1000 #(hex (.randombytes_buf s 16)))))))
     (println (str "\n" @fails " failed"))
     (js/process.exit (if (pos? @fails) 1 0))))

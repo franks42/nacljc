@@ -9,7 +9,8 @@
    native buffer is wiped before it is released (on success and on error),
    results never alias inputs or native memory, and the public API is
    exactly the documented one. Run from the repo root."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [babashka.ffi :as ffi]
             [nacljc.core :as na]
             #?(:clj  [clojure.edn :as edn]
@@ -80,7 +81,12 @@
      ed25519->x25519-public-key ed25519->x25519-secret-key
      x25519 x25519-public-key
      chacha20-poly1305-encrypt chacha20-poly1305-decrypt
-     sha-256 hmac-sha-256 hkdf-sha-256})
+     sha-256 hmac-sha-256 hkdf-sha-256
+     ;; 0.2.0
+     aegis256-encrypt aegis256-decrypt
+     xwing-public-key xwing-encapsulate xwing-decapsulate
+     secret? secret-random secret-import! secret-export secret-destroy!
+     secret-length secret-destroyed? with-secret})
 
 (deftest public-api-is-exactly-the-documented-one
   (is (= api (set (keys (ns-publics 'nacljc.core))))
@@ -168,7 +174,17 @@
          "hmac data"                  #(na/hmac-sha-256 s32 %)
          "memzero!"                   #(na/memzero! %)
          "constant-time-equal? a"     #(na/constant-time-equal? % s32)
-         "constant-time-equal? b"     #(na/constant-time-equal? s32 %)}]
+         "constant-time-equal? b"     #(na/constant-time-equal? s32 %)
+         "aegis256 encrypt key"       #(na/aegis256-encrypt % s32 msg nil)
+         "aegis256 encrypt nonce"     #(na/aegis256-encrypt s32 % msg nil)
+         "aegis256 encrypt plaintext" #(na/aegis256-encrypt s32 s32 % nil)
+         "aegis256 decrypt key"       #(na/aegis256-decrypt % s32 (b 32) nil)
+         "aegis256 decrypt ct"        #(na/aegis256-decrypt s32 s32 % nil)
+         "xwing-public-key"           #(na/xwing-public-key %)
+         "xwing-encapsulate"          #(na/xwing-encapsulate %)
+         "xwing-decapsulate seed"     #(na/xwing-decapsulate % (b 1120))
+         "xwing-decapsulate ct"       #(na/xwing-decapsulate s32 %)
+         "secret-import!"             #(na/secret-import! %)}]
     (doseq [[label f] cases, x not-bytes]
       (is (= [:nacljc.core/bad-input 0] (rejected #(f x)))
           (str label " with " (pr-str x))))
@@ -265,9 +281,12 @@
 
 (defn- hygienic?
   "At least one arena was used, and every arena (a run of events ending in
-   :close) was hygienic, with nothing left over after the last close."
+   :close) was hygienic, with nothing left over after the last close.
+   Secret-memory events (:protect, :secret-alloc, :free) are checked
+   separately."
   [events]
-  (let [arenas (loop [es events acc []]
+  (let [events (filter (comp #{:alloc :wipe :close} first) events)
+        arenas (loop [es events acc []]
                  (if (empty? es)
                    acc
                    (let [[a more] (split-with #(not= [:close] %) es)]
@@ -291,7 +310,10 @@
                          "hkdf"                #(na/hkdf-sha-256 k nil nil 64)
                          "sha-256"             #(na/sha-256 msg)
                          "hmac"                #(na/hmac-sha-256 k msg)
-                         "constant-time-equal" #(na/constant-time-equal? k k)}]
+                         "constant-time-equal" #(na/constant-time-equal? k k)
+                         "aegis256"            #(na/aegis256-encrypt k k msg nil)
+                         "xwing-public-key"    #(na/xwing-public-key k)
+                         "xwing-decapsulate"   #(na/secret-destroy! (na/xwing-decapsulate k (b 1120)))}]
         (let [[r events] (audited f)]
           (is (= :no-throw r) (str label " failed: " (pr-str r)))
           (is (hygienic? events) (str label ": " (pr-str events))))))
@@ -376,3 +398,218 @@
 (deftest random-bytes-are-distinct
   (is (= 32 (alength (na/random-bytes 32))))
   (is (= 1000 (count (set (repeatedly 1000 #(hex (na/random-bytes 16))))))))
+
+;; ---- 0.2.0: native secrets ----
+
+(def ^:private ack {:i-understand :exposes-secret})
+(defn- reveal [s] (na/secret-export s ack))
+(defn- secret-of [hex-or-bytes]
+  (na/secret-import! (if (string? hex-or-bytes) (unhex hex-or-bytes) hex-or-bytes)))
+
+(deftest secret-lifecycle
+  (let [s (na/secret-random 32)]
+    (is (na/secret? s))
+    (is (not (na/secret? (b 32))))
+    (is (= 32 (na/secret-length s)))
+    (is (false? (na/secret-destroyed? s)))
+    (is (= 32 (alength (reveal s))))
+    (is (not= (hex (reveal s)) (hex (reveal (na/secret-random 32)))) "random")
+    (is (nil? (na/secret-destroy! s)))
+    (is (true? (na/secret-destroyed? s)))
+    (is (nil? (na/secret-destroy! s)) "destroying twice is a no-op")
+    (testing "a destroyed secret cannot be used"
+      (is (= :nacljc.core/destroyed-secret (error-type #(reveal s))))
+      (is (= :nacljc.core/destroyed-secret (error-type #(na/ed25519-sign s (utf8 "m")))))
+      (is (= :nacljc.core/destroyed-secret (error-type #(na/x25519-public-key s)))))))
+
+(deftest secret-import!-copies-then-wipes-the-callers-array
+  (let [bs (b 32 7)
+        s  (na/secret-import! bs)]
+    (is (= (repeat 32 0) (byte-seq bs)) "the caller's array is wiped")
+    (is (= (repeat 32 7) (byte-seq (reveal s))) "the secret holds the bytes")
+    (na/secret-destroy! s)))
+
+(deftest secret-export-needs-the-acknowledgement
+  (let [s (na/secret-random 16)]
+    (doseq [bad [nil {} {:i-understand true} {:i-understand :yes} :i-understand]]
+      (is (= :nacljc.core/export-not-acknowledged (error-type #(na/secret-export s bad)))
+          (pr-str bad)))
+    (is (= 16 (alength (reveal s))))
+    (na/secret-destroy! s)))
+
+(deftest secrets-never-show-their-bytes
+  (let [bs (b 32 0x42)
+        s  (na/secret-import! (b 32 0x42))]
+    (is (= "#nacljc/secret{:bytes 32}" (pr-str s)))
+    (is (= "#nacljc/secret{:bytes 32}" (str s)))
+    (is (= "{:k #nacljc/secret{:bytes 32}}" (pr-str {:k s})) "nested")
+    (is (not (map? s)) "not a map: cannot be walked or serialised as data")
+    (is (not (coll? s)))
+    (is (not (str/includes? (pr-str s) (hex bs))))
+    (na/secret-destroy! s)))
+
+(deftest secret-sizes-and-types
+  (doseq [n [0 -1 65537]]
+    (is (= [:nacljc.core/bad-length 0] (rejected #(na/secret-random n))) (pr-str n)))
+  (doseq [x [nil 1.5 "32"]]
+    (is (= :nacljc.core/bad-input (error-type #(na/secret-random x))) (pr-str x)))
+  (is (= :nacljc.core/bad-length (error-type #(na/secret-import! (b 0)))) "empty")
+  (is (= :nacljc.core/bad-length (error-type #(na/ed25519-sign (na/secret-random 31) (utf8 "m"))))
+      "a secret of the wrong size is refused like a wrong-size array"))
+
+(deftest secrets-give-the-same-answers-as-bytes
+  (let [{:keys [seed pk msg sig]} (get-in vectors [:rfc :ed25519])
+        seed-s (secret-of seed)]
+    (is (= pk (hex (na/ed25519-public-key seed-s))))
+    (is (= sig (hex (na/ed25519-sign seed-s (utf8 msg)))))
+    (na/secret-destroy! seed-s))
+  (let [{:keys [scalar u out]} (get-in vectors [:rfc :x25519])
+        sk (secret-of scalar)
+        shared (na/x25519 sk (unhex u))]
+    (is (na/secret? shared) "a secret input gives a secret output")
+    (is (= out (hex (reveal shared))))
+    (run! na/secret-destroy! [sk shared]))
+  (let [{:keys [sk pk]} (get-in vectors [:rfc :x25519-base])
+        s (secret-of sk)]
+    (is (= pk (hex (na/x25519-public-key s))) "public outputs stay byte arrays")
+    (na/secret-destroy! s))
+  (let [v (:xplatform vectors)
+        seed (secret-of (:seed v))
+        xsk  (na/ed25519->x25519-secret-key seed)]
+    (is (na/secret? xsk))
+    (is (= (:x-sk v) (hex (reveal xsk))))
+    (run! na/secret-destroy! [seed xsk]))
+  (let [{:keys [key nonce ad pt ct]} (get-in vectors [:rfc :aead])
+        k (secret-of key)]
+    (is (= ct (hex (na/chacha20-poly1305-encrypt k (unhex nonce) (utf8 pt) (unhex ad)))))
+    (is (= (hex (utf8 pt)) (hex (na/chacha20-poly1305-decrypt k (unhex nonce) (unhex ct) (unhex ad)))))
+    (na/secret-destroy! k))
+  (let [{:keys [ikm salt info len okm]} (get-in vectors [:rfc :hkdf])
+        ikm-s (secret-of ikm)
+        out   (na/hkdf-sha-256 ikm-s (unhex salt) (unhex info) len)]
+    (is (na/secret? out))
+    (is (= okm (hex (reveal out))))
+    (run! na/secret-destroy! [ikm-s out]))
+  (doseq [{:keys [source key data mac]} (get-in vectors [:rfc :hmac-sha256])]
+    (let [k (secret-of key)]
+      (is (= mac (hex (na/hmac-sha-256 k (utf8 data)))) source)
+      (na/secret-destroy! k))))
+
+(defn- protect-events [events] (filter (comp #{:protect :secret-alloc :free} first) events))
+
+(defn- protection-hygienic?
+  "Every secret touched ends no-access: its last :protect event is
+   :noaccess, and read-only windows are balanced."
+  [events]
+  (let [by-addr (group-by second (filter #(= :protect (first %)) events))]
+    (and (seq by-addr)
+         (every? (fn [[_ evs]] (= :noaccess (nth (last evs) 2))) by-addr))))
+
+(deftest secret-memory-is-no-access-outside-calls
+  (let [log (atom [])]
+    (binding [na/*audit* log]
+      (let [seed (na/secret-random 32)
+            k    (na/secret-random 32)]
+        (na/ed25519-sign seed (utf8 "m"))
+        (na/ed25519-public-key seed)
+        (na/chacha20-poly1305-encrypt k (b 12) (utf8 "m") nil)
+        (na/secret-destroy! (na/hkdf-sha-256 k nil nil 32))
+        (na/secret-destroy! (na/x25519 k (na/x25519-public-key seed)))
+        (reveal k)
+        (error-type #(na/chacha20-poly1305-decrypt k (b 12) (b 20) nil))
+        (is (= :nacljc.core/low-order-point (error-type #(na/x25519 k (b 32 0))))
+            "a failure after the secret result was allocated frees it")
+        (run! na/secret-destroy! [seed k])))
+    (is (protection-hygienic? @log) (pr-str (protect-events @log)))
+    (is (= (count (filter #(= :secret-alloc (first %)) @log))
+           (count (filter #(= :free (first %)) @log)))
+        "every secret allocated here was freed")))
+
+(deftest a-secret-in-use-cannot-be-destroyed
+  (let [s (na/secret-random 32)]
+    (#'na/open-secret! s)
+    (try
+      (is (= :nacljc.core/secret-in-use (error-type #(na/secret-destroy! s))))
+      (finally (#'na/close-secret! s)))
+    (is (nil? (na/secret-destroy! s)) "fine once no call uses it")))
+
+(deftest with-secret-destroys-on-exit
+  (let [held (atom nil)]
+    (na/with-secret [s (na/secret-random 32)]
+      (reset! held s)
+      (is (false? (na/secret-destroyed? s))))
+    (is (true? (na/secret-destroyed? @held)))
+    (try (na/with-secret [s (na/secret-random 32)]
+           (reset! held s)
+           (throw (ex-info "boom" {})))
+         (catch #?(:clj Exception :cljs :default) _ nil))
+    (is (true? (na/secret-destroyed? @held)) "also when the body throws")))
+
+#?(:clj
+   (deftest one-secret-many-threads
+     (let [s   (na/secret-random 32)
+           msg (utf8 "same message")
+           sigs (doall (pmap (fn [_] (hex (na/ed25519-sign s msg))) (range 200)))]
+       (is (= 1 (count (set sigs))) "every thread signed with the same key")
+       (is (zero? (#'na/secret-uses s)) "no access window left open")
+       (na/secret-destroy! s))))
+
+;; ---- 0.2.0: AEGIS-256 (RFC 10032) ----
+
+(deftest rfc10032-aegis-256
+  (let [{:keys [key nonce valid invalid]} (:aegis256 vectors)]
+    (doseq [{:keys [tv ad msg ct tag]} valid
+            k [(unhex key) (secret-of key)]]
+      (is (= (str ct tag) (hex (na/aegis256-encrypt k (unhex nonce) (unhex msg) (unhex ad))))
+          (str "TV" tv (when (na/secret? k) " (secret key)")))
+      (is (= msg (hex (na/aegis256-decrypt k (unhex nonce) (unhex (str ct tag)) (unhex ad))))
+          (str "TV" tv " decrypts"))
+      (when (na/secret? k) (na/secret-destroy! k)))
+    (doseq [{:keys [tv why ad ct tag] :as v} invalid]
+      (is (= :nacljc.core/auth-failed
+             (error-type #(na/aegis256-decrypt (unhex (:key v key)) (unhex (:nonce v nonce))
+                                               (unhex (str ct tag)) (unhex ad))))
+          (str "TV" tv ": " why)))))
+
+(deftest aegis-256-sizes
+  (let [msg (utf8 "m") bad-length? #(= [:nacljc.core/bad-length 0] (rejected %))]
+    (is (bad-length? #(na/aegis256-encrypt (b 31) (b 32) msg nil)))
+    (is (bad-length? #(na/aegis256-encrypt (b 32) (b 12) msg nil)) "a ChaCha-size nonce")
+    (is (bad-length? #(na/aegis256-encrypt (b 32) (b 24) msg nil)))
+    (is (bad-length? #(na/aegis256-decrypt (b 32) (b 32) (b 31) nil)) "shorter than the 32-byte tag")))
+
+;; ---- 0.2.0: X-Wing (ML-KEM-768 + X25519) ----
+
+(deftest xwing-known-answers
+  (doseq [{:keys [seed randomness pk-prefix ct-prefix ss]} (get-in vectors [:xwing :vectors])]
+    (let [pk (na/xwing-public-key (unhex seed))
+          {:keys [ciphertext shared-secret]} (#'na/xwing-encapsulate-deterministic pk (unhex randomness))]
+      (is (= 1216 (alength pk)))
+      (is (= pk-prefix (subs (hex pk) 0 64)))
+      (is (= 1120 (alength ciphertext)))
+      (is (= ct-prefix (subs (hex ciphertext) 0 52)))
+      (is (na/secret? shared-secret) "shared secrets are always secret objects")
+      (is (= ss (hex (reveal shared-secret))))
+      (doseq [sk [(unhex seed) (secret-of seed)]]
+        (let [ss2 (na/xwing-decapsulate sk ciphertext)]
+          (is (= ss (hex (reveal ss2))) (if (na/secret? sk) "decapsulate, secret seed" "decapsulate"))
+          (na/secret-destroy! ss2)
+          (when (na/secret? sk) (na/secret-destroy! sk))))
+      (na/secret-destroy! shared-secret))))
+
+(deftest xwing-round-trip
+  (na/with-secret [seed (na/secret-random 32)]
+    (let [pk (na/xwing-public-key seed)
+          {:keys [ciphertext shared-secret]} (na/xwing-encapsulate pk)
+          back (na/xwing-decapsulate seed ciphertext)]
+      (is (= (hex (reveal shared-secret)) (hex (reveal back))))
+      (is (not= (hex ciphertext) (hex (:ciphertext (na/xwing-encapsulate pk)))) "randomised")
+      (run! na/secret-destroy! [shared-secret back]))))
+
+(deftest xwing-sizes
+  (let [bad-length? #(= [:nacljc.core/bad-length 0] (rejected %))]
+    (is (bad-length? #(na/xwing-public-key (b 31))))
+    (is (bad-length? #(na/xwing-encapsulate (b 1215))))
+    (is (bad-length? #(na/xwing-decapsulate (b 32) (b 1119))))
+    (is (bad-length? #(na/xwing-decapsulate (b 64) (b 1120))))))
+

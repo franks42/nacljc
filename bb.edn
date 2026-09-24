@@ -21,6 +21,9 @@
   test:loading {:doc  "Library loading in fresh processes on bb, nbb and the JVM: defaults, NACLJC_LIBSODIUM, -Dnacljc.libsodium, missing and wrong libraries"
                 :task (shell "bb" "-cp" "test" "-m" "loading.run")}
 
+  test:secrets {:doc  "Secret memory faults when read outside an access window or after destroy (child processes on bb, the JVM and nbb)"
+                :task (shell "bb" "-cp" "test" "-m" "secrets.run")}
+
   test:wasm {:doc  "Check libsodium.js (WASM) against the same vectors (needs npm install in test/wasm)"
              :task (shell {:dir "test/wasm"} "nbb" "check.cljs")}
 
@@ -63,16 +66,28 @@
                :task (do (run 'test:signet-jca) (run 'test:signet-jvm) (run 'test:signet-bb))}
 
   test:all  {:doc  "Every runtime (bb, JVM, nbb, WASM on Node, Scittle in Chromium), library loading, lint and format"
-             :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb) (run 'test:loading)
+             :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb) (run 'test:loading) (run 'test:secrets)
                        (run 'test:wasm) (run 'test:browser) (run 'lint) (run 'fmt))}
 
-  test:jar  {:doc  "Install the jar, then run the suite against it from a scratch project (no src/) on the JVM, bb and nbb"
-             :task (do (shell "clojure" "-P") ; fresh machines: tools.build cannot fetch deps itself
+  test:jar  {:doc  "Install the jar, then run the suite against it from a scratch project (no src/) on the JVM, bb and nbb. Refuses a version already on Clojars."
+             :task (do (run 'check-not-released)
+                       (shell "clojure" "-P") ; fresh machines: tools.build cannot fetch deps itself
                        (shell "clojure" "-T:build" "install")
                        (shell "bb" "-cp" "test" "-m" "consumer.check" "local"))}
 
   test:clojars {:doc  "Run the suite against a release fetched from Clojars (empty local repo), on the JVM, bb and nbb. Arg: version"
                 :task (apply shell "bb" "-cp" "test" "-m" "consumer.check" "clojars" *command-line-args*)}
+
+  check-not-released
+  {:doc  "Fail if build.clj's version is already published on Clojars: installing it locally would shadow the real jar in ~/.m2"
+   :task (let [ver (second (re-find (re-pattern "\\(def version \"([^\"]+)\"\\)") (slurp "build.clj")))
+               url (str "https://repo.clojars.org/com/github/franks42/nacljc/" ver "/nacljc-" ver ".pom")
+               published? (zero? (:exit (shell {:continue true :out :string :err :string} "curl" "-sfI" url)))]
+           ;; Refuse to install a released version: the local build would shadow the
+           ;; published jar in ~/.m2 (it happened once, 2026-09-23, right after a release).
+           (when published?
+             (println "ERROR: nacljc" ver "is already on Clojars; bump build.clj to the next -SNAPSHOT before installing")
+             (System/exit 1)))}
 
   release-check {:doc  "Refuse to release unless build.clj's version is a plain X.Y.Z and CHANGELOG.md has a section for it"
                  :task (let [ver (second (re-find (re-pattern "\\(def version \"([^\"]+)\"\\)") (slurp "build.clj")))

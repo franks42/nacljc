@@ -91,6 +91,32 @@ and bb. On nbb, `Int8Array` or `Uint8Array` in, and `Int8Array` out.
 | `(memzero! bs)` | byte array | nil; overwrites `bs` with zeros |
 | `(constant-time-equal? a b)` | two byte arrays | boolean; constant-time for equal lengths |
 | `(libsodium-version)`, `minimum-libsodium-version` | | `"1.0.22"`, `[1 0 19]` |
+| `(aegis256-encrypt k nonce pt aad)` | key 32, **nonce 32**, plaintext, aad (nil = none) | ciphertext ‖ **32-byte** tag (AEGIS-256, RFC 10032) |
+| `(aegis256-decrypt k nonce ct aad)` | key 32, nonce 32, ciphertext ≥ 32, aad | plaintext |
+| `(xwing-public-key seed)` | seed 32 (the X-Wing secret key) | public key 1216 (X-Wing: ML-KEM-768 + X25519) |
+| `(xwing-encapsulate pk)` | public key 1216 | `{:ciphertext <1120 bytes> :shared-secret <secret>}` |
+| `(xwing-decapsulate seed ct)` | seed 32, ciphertext 1120 | shared secret, **always a secret object** |
+
+**Secrets (0.2.0).** Key material can live in libsodium's guarded memory
+instead of the Clojure heap:
+
+| Function | Does |
+|---|---|
+| `(secret-random n)` | a new secret of n random bytes (1..65536), drawn straight into guarded memory |
+| `(secret-import! bs)` | a new secret holding a copy of `bs`, **then wipes `bs`** |
+| `(secret-export s {:i-understand :exposes-secret})` | the bytes as a new array; throws `::export-not-acknowledged` without that exact map |
+| `(secret-destroy! s)` | zeroes and frees it (`sodium_free`); later use throws `::destroyed-secret`; again is a no-op |
+| `(with-secret [s (secret-random 32)] …)` | destroys `s` on exit, also when the body throws |
+| `(secret? x)`, `(secret-length s)`, `(secret-destroyed? s)` | |
+
+Every function that takes key material (a seed, a secret key, an AEAD, HMAC
+or HKDF key) accepts a secret wherever it accepts a byte array. **Secrets
+stay secrets:** when a secret-key *input* is a secret, a result that is
+itself secret key material comes back as a secret too. That covers the
+X25519 shared secret, `ed25519->x25519-secret-key` and HKDF output.
+Public results (public keys, signatures, ciphertexts, MAC tags) are byte
+arrays. Callers that pass byte arrays get byte arrays, exactly as in 0.1.0.
+X-Wing shared secrets are always secrets.
 
 Ed25519 secret keys are **32-byte seeds**. libsodium's 64-byte secret key
 (seed ‖ public key) never leaves native memory; take its first 32 bytes
@@ -106,6 +132,10 @@ Errors are `ex-info` with a `:type`:
 | `:nacljc.core/low-order-point` | `x25519` with a small-order public key (the shared secret would be all zeros) |
 | `:nacljc.core/invalid-public-key` | `ed25519->x25519-public-key` with a point that is not on the curve or has small order |
 | `:nacljc.core/call-failed` | any other non-zero libsodium return code |
+| `:nacljc.core/destroyed-secret` | a secret used after `secret-destroy!` |
+| `:nacljc.core/secret-in-use` | `secret-destroy!` while another thread's call is using the secret |
+| `:nacljc.core/export-not-acknowledged` | `secret-export` without `{:i-understand :exposes-secret}` |
+| `:nacljc.core/unsupported-by-libsodium` | X-Wing on a libsodium older than 1.0.22 |
 | `:nacljc.core/library-not-found`, `not-libsodium`, `libsodium-too-old`, `init-failed` | at load time (see below) |
 
 Error data describes types and sizes, **never contents**, since they may be
@@ -148,8 +178,21 @@ all: it aborts the whole process inside libsodium.
 
 What stays with the caller:
 
+- **Secrets live in guarded memory** (0.2.0). A secret's bytes are in
+  `sodium_malloc` memory: guard pages around it, canaries checked when it
+  is freed, and locked so it is never swapped out. It is **no-access
+  except during a call that uses it**, when it is read-only. C reads it in
+  place, so the bytes never reach the Clojure heap unless you call
+  `secret-export`. Several threads can use one secret at once: a counter
+  under a lock opens the read-only window on the first use and closes it
+  after the last. `bb test:secrets` proves the protection in child
+  processes: reading a secret's memory outside a call, or after
+  destroying it, **faults** (bb and nbb crash; the JVM raises
+  `InternalError`), while the same read inside a call works. Removing the
+  counter as an experiment crashed the JVM with SIGBUS when threads shared
+  a secret.
 - **Clojure-side arrays are yours.** Arrays you pass in and get back live
-  on the Clojure heap. They are not locked in memory, and the JVM's moving
+  on the Clojure heap. Prefer secrets for long-lived keys. They are not locked in memory, and the JVM's moving
   garbage collector may already have copied them. Call `memzero!` on
   secrets when you are done.
 - **Raw bytes carry no key type.** An Ed25519 public key and an X25519
@@ -158,8 +201,12 @@ What stays with the caller:
 - **Nonces are your responsibility.** `chacha20-poly1305-encrypt` takes a
   caller-chosen nonce. Never reuse one with the same key. Higher-level
   APIs such as signet's box hide nonces entirely.
-- **Native buffers are not `mlock`ed.** A buffer could reach swap during
-  the microseconds of a call.
+- **Scratch buffers are not `mlock`ed.** Byte-array inputs are copied into
+  a per-call scratch arena (wiped before release), which could reach swap
+  during the microseconds of a call. Secrets are locked.
+- **Destroy your secrets.** Guarded memory is not garbage-collected: a
+  secret that is dropped without `secret-destroy!` (or `with-secret`)
+  stays allocated and locked until the process exits.
 
 ## Loading libsodium
 
@@ -192,7 +239,7 @@ own.
 
 | Component | Minimum | Tested | Notes |
 |---|---|---|---|
-| libsodium (native) | **1.0.19** | 1.0.22 (Homebrew) | 1.0.19 added HKDF; `nacljc.core` checks the version at load and throws `::libsodium-too-old` for anything older. macOS: `brew install libsodium`. On Linux, check your distribution's version with `pkg-config --modversion libsodium`, since some ship an older one. |
+| libsodium (native) | **1.0.19** (X-Wing: **1.0.22**) | 1.0.22 (Homebrew) | 1.0.19 added HKDF and AEGIS-256; X-Wing arrived in 1.0.22, and on an older libsodium only the X-Wing functions fail, with `::unsupported-by-libsodium`; `nacljc.core` checks the version at load and throws `::libsodium-too-old` for anything older. macOS: `brew install libsodium`. On Linux, check your distribution's version with `pkg-config --modversion libsodium`, since some ship an older one. |
 | JDK (JVM Clojure) | **25** | 25.0.3 (Temurin) | `org.babashka/ffi` needs JDK 25+. On 21.0.11 it fails with `ClassNotFoundException: java.lang.classfile.ClassBuilder`. Run with `--enable-native-access=ALL-UNNAMED` (the `:test` alias sets it). Without it, JDK 25 warns that native calls "will be blocked in a future release". |
 | `org.babashka/ffi` (JVM only) | 0.1.2 | 0.1.2 | Built into bb and nbb. Experimental. |
 | Clojure CLI | — | 1.12.6 | |
@@ -211,6 +258,7 @@ bb test:bb        # vector tests on babashka
 bb test:jvm       # vector tests on JVM Clojure (JDK 25+)
 bb test:nbb       # vector tests on nbb (Node 26+)
 bb test:loading   # library loading in fresh processes, on bb, nbb and the JVM
+bb test:secrets   # secret memory faults outside calls and after destroy (child processes, all runtimes)
 bb test:wasm      # libsodium.js on Node        (first: cd test/wasm && npm install)
 bb test:browser   # Scittle + libsodium.js in headless Chromium
                   # (first: cd test/browser && npm install; optional arg = a libsodium.js build URL or path)

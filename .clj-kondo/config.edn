@@ -1,4 +1,6 @@
 {;; babashka.ffi's own hooks (defcfn) come from .clj-kondo/imports/babashka/ffi,
  ;; imported with: clj-kondo --lint "$(clojure -Spath)" --dependencies --copy-configs --skip-lint
  :lint-as {nacljc.core/with-scratch clojure.core/fn
+           nacljc.core/with-open-secrets clojure.core/when
+           nacljc.core/with-secret clojure.core/let
            promesa.core/let      clojure.core/let}}

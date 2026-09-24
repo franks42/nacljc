@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+### Added
+
+- **Secrets in guarded memory.**
+  - `secret-random`, `secret-import!` (copies, then wipes the caller's
+    array), `secret-export` (requires `{:i-understand :exposes-secret}`),
+    `secret-destroy!`, `with-secret`, `secret?`, `secret-length`,
+    `secret-destroyed?`.
+  - A secret lives in `sodium_malloc` memory (guard pages, canaries,
+    `mlock`). It is no-access except during a call using it, then
+    read-only. It is safe to share between threads. It prints as
+    `#nacljc/secret{:bytes n}` and is not a map.
+  - Every function that takes key material accepts a secret. Secret-key
+    results of secret inputs are secrets: the X25519 shared secret,
+    `ed25519->x25519-secret-key`, HKDF output.
+- **AEGIS-256** (RFC 10032): `aegis256-encrypt` and `aegis256-decrypt`,
+  with a 32-byte nonce and a 32-byte tag. Checked against the RFC's test
+  vectors natively and in libsodium.js (WASM on Node, headless Chrome).
+- **X-Wing** (ML-KEM-768 + X25519, libsodium 1.0.22+): `xwing-public-key`,
+  `xwing-encapsulate`, `xwing-decapsulate`. Shared secrets are always
+  secrets. Checked against the X-Wing test vectors. On an older libsodium
+  only these functions fail, with `::unsupported-by-libsodium`.
+- `bb test:secrets`: in child processes on bb, the JVM and nbb, reading a
+  secret's memory outside a call or after destroy faults.
+- A clj-kondo config export, so `na/with-secret` lints as `let`.
+
+### Unchanged
+
+- Every 0.1.0 function keeps its behaviour for byte-array inputs.
+
 ## 0.1.0 (2026-09-23)
 
 First release. Before this, nacljc was a research repo named `sodium.cljc`.
