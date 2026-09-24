@@ -98,3 +98,40 @@ Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
 2. A cljc facade over FFI (clj/bb/nbb) and libsodium.js (Scittle).
 3. File the two libsodium.js observations upstream.
 4. Decide on secp256k1 (not in libsodium) and on distribution.
+
+## Naming: purity, `!` and exceptions
+
+The same convention holds in canonical-edn, uuidv7, nacljc and signet
+(decided 2026-09-23).
+
+- **`!` means the call writes state that outlives it.** That covers
+  atoms, volatiles and transients, global registries (such as signet's key
+  store), the contents of an argument (wiping a buffer, consuming a
+  session state), native memory the caller owns, files, databases and
+  network sends. This is clojure.core's line (`reset!`, `swap!`, `conj!`),
+  extended to external writes, as in the Clojure style guide's `save-user!`.
+- **Reads get no `!`, even impure ones:** the clock, the random
+  generator (drawing is not a write), the environment, system properties
+  and file reads. Printing and logging are diagnostic and get no `!`
+  either. The docstring says what the function reads.
+- **`!` never means "may throw".** That is the Elixir and Rails meaning,
+  and it is not used here. An exception signals abnormal execution, and
+  Clojure never forces a caller to catch one, so throwing is documented,
+  not encoded in the name.
+- **Docstrings** state these facts in their first paragraph, in fixed
+  wording:
+  - `Impure: <what it reads or writes>.` for every impure function.
+  - `Throws ex-info {:type ::x} when …`, listing every `:type`. The
+    ex-data `:type` is the contract; callers dispatch on it, never on the
+    message.
+  - `Never throws: …` for functions that promise it, such as verifiers
+    returning `{:valid? false …}`.
+- **Validators** that return their argument or throw are named `check-…`
+  (for example `check-bytes`). Helpers whose only job is to throw are named
+  `throw-…`.
+- **Prefer a pure core with a thin `!` shell** (functional core, imperative
+  shell). When a function both computes and writes, offer the pure one and
+  make the write a separate, explicit `!` call, rather than only renaming.
+
+Existing names that break this rule were inventoried on 2026-09-23 and
+have not been renamed yet.
