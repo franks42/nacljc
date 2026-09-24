@@ -89,6 +89,8 @@ jobs:
         run: bb test:nbb
       - name: Library loading (bb, nbb, JVM)
         run: bb test:loading
+      - name: Secret memory faults outside calls (bb, nbb, JVM)
+        run: bb test:secrets
 
       - name: libsodium.js (WASM) on Node
         run: |
@@ -163,6 +165,8 @@ jobs:
         run: bb test:nbb
       - name: Library loading (bb, nbb, JVM)
         run: bb test:loading
+      - name: Secret memory faults outside calls (bb, nbb, JVM)
+        run: bb test:secrets
       - name: Suite against the installed jar (JVM, bb, nbb)
         run: bb test:jar
 
