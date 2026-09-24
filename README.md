@@ -36,7 +36,7 @@ never had, such as HKDF-SHA-256 and IETF ChaCha20-Poly1305. The repo was
 called `sodium.cljc` until 2026-09-23. It was renamed because Clojars'
 `com.degel/sodium` already ships a `sodium.core` namespace.
 
-Status: **pre-release.** The API below is what 0.1.0 will ship.
+Status: **0.1.0 released** on Clojars (2026-09-23; see [CHANGELOG.md](CHANGELOG.md)). signet uses it as its libsodium backend.
 [`docs/feasibility.md`](docs/feasibility.md) has the research findings and
 the evidence.
 
