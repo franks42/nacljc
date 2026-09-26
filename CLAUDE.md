@@ -9,7 +9,16 @@ Public repo: https://github.com/franks42/nacljc.
 - Releases: a `vX.Y.Z` tag triggers `release.yml`. It runs
   `bb release-check` and the tests, deploys to Clojars, then runs
   `bb test:clojars X.Y.Z` against the jar fetched back from Clojars.
-- **main is 0.4.0-SNAPSHOT** (nothing planned yet; signet 0.9.1 uses 0.3.1).
+- **main is 0.4.0-SNAPSHOT**; 0.3.2 (review fixes, see CHANGELOG) is ready
+  to release. Planned for 0.4.0: CI against Ubuntu's libsodium 1.0.18 (the
+  too-old refusal, the `.so.23` fallback, `::unsupported-by-libsodium`), and
+  `constant-time-equal?` over secrets (`sodium_memcmp` on two open windows).
+- **Docstrings:** every function, public and private, states its purity in
+  its first paragraph: `Pure.`, or `Impure: <what it reads or writes>`, or
+  for key-taking functions "Pure for byte-array keys; with a secret,
+  impure: reads it". Then `Throws ex-info {:type ::x} when …` with every
+  `:type` (or `Never throws`). Scratch native memory allocated and wiped
+  within a call does not count as state.
 - **0.3.1 (released 2026-09-25):** `sodium_stackzero` (16 KiB) after every
   operation that reads a secret, in `with-open-secrets`; signet 0.9.1 uses it.
 - **0.3.0 (released 2026-09-25):** `secret-split` and a secret HKDF salt,
@@ -17,7 +26,8 @@ Public repo: https://github.com/franks42/nacljc.
 - **0.2.0 (released 2026-09-24):** secrets in guarded memory (`secret-*`,
   `with-secret`; no-access outside calls, a counter under a lock for
   threads), AEGIS-256, X-Wing (bound only if libsodium >= 1.0.22). Secret
-  inputs give secret key outputs. `bb test:secrets` proves the fault.
+  inputs give secret key outputs. `bb test:secrets` proves the fault (on
+  the JVM a read after destroy crashes the process: use after free).
   **After every release, bump build.clj to the next -SNAPSHOT**;
   `bb check-not-released` (in test:jar) refuses a released version.
 - **Hard rule: this ns is the C boundary.** Read the README's "Memory and
@@ -101,11 +111,11 @@ Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
 
 ## Next steps (from the feasibility doc)
 
-1. ~~libsodium backend behind signet's `signet.impl.jvm` functions~~ Done:
-   `integration/signet-shim` passes signet's unmodified suite on the JVM
-   (102/436, same as JCA) and on bb (93/415; JCA on bb: 16 errors).
-   `bb test:signet`. Also moved into signet as `signet.impl.sodium` + the
-   `signet.impl` facade, merged into signet's main (PR #1, 0.7.0-SNAPSHOT).
+1. ~~libsodium backend behind signet's `signet.impl.jvm` functions~~ Done,
+   and moved into signet as `signet.impl.sodium` + the `signet.impl`
+   facade (0.7.0). The early shim (`integration/`) was removed in 0.3.2;
+   `bb test:signet` now runs signet's own suite on this checkout (JVM
+   183/1000 + parity 54, bb 173/974 with signet 0.9.2).
 2. A cljc facade over FFI (clj/bb/nbb) and libsodium.js (Scittle).
 3. File the two libsodium.js observations upstream.
 4. Decide on secp256k1 (not in libsodium) and on distribution.

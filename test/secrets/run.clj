@@ -2,9 +2,11 @@
   "Secret memory is really inaccessible outside calls: in a child process, a
    read of a secret's memory outside an access window, or after destroying
    it, must fault, while the same read inside a window works. The fault
-   crashes bb and nbb (SIGSEGV/SIGBUS). The JVM turns it into
-   InternalError \"a fault occurred in an unsafe memory access operation\"
-   on macOS and aborts on Linux.
+   crashes bb and nbb (SIGSEGV/SIGBUS). On the JVM a read outside a window
+   (mapped, no-access) becomes InternalError \"a fault occurred in an
+   unsafe memory access operation\" on macOS and aborts on Linux; a read
+   after destroy is a use after free, and the JVM crashes (SIGSEGV, exit
+   134), writing its crash log to target/.
    Either way no byte is read. On bb, the JVM and nbb.
    Run from the repo root: bb test:secrets"
   (:require [babashka.process :as p]
@@ -16,7 +18,9 @@
   (case runtime
     :bb  ["bb" "-cp" "src" child]
     :nbb ["nbb" "-cp" "src" child]
-    :jvm ["clojure" "-J--enable-native-access=ALL-UNNAMED" "-M" child]))
+    :jvm ["clojure" "-J--enable-native-access=ALL-UNNAMED"
+          ;; the expected crashes write hs_err logs: into target/, not the repo root
+          "-J-XX:ErrorFile=target/hs_err_pid%p.log" "-M" child]))
 
 (defn- run-child [runtime mode]
   @(p/process (command runtime) {:out :string :err :string :extra-env {"NACLJC_PROBE" mode}}))

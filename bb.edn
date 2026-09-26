@@ -36,34 +36,28 @@
                               "{:aliases {:signet {:extra-paths [\"../signet/src\"]}}}"
                               "-M:test:signet" "-m" "nacljc.jca-crosscheck"))}
 
-  ;; signet's unmodified test suite on libsodium (shim ahead of signet's
-  ;; src) and, as the oracle, on signet's own JCA backend. Needs ../signet.
-  ;; The JVM runs pick up signet's own deps.edn via :local/root.
-  test:signet-jvm {:doc  "signet's test suite on the JVM, backend = libsodium"
-                   :task (shell "clojure" "-Sdeps"
-                                (str "{:paths [\"integration/signet-shim\" \"src\" \"integration\" \"../signet/test\"]"
-                                     " :deps {signet/signet {:local/root \"../signet\"}"
-                                     "        org.babashka/ffi {:mvn/version \"0.1.2\"}}}")
-                                "-J--enable-native-access=ALL-UNNAMED"
-                                "-M" "-m" "nacljc.signet-suite" "libsodium")}
+  ;; signet's own test suite, run in ../signet with its :sodium backend,
+  ;; with nacljc replaced by this checkout (:override-deps beats the alias's
+  ;; Clojars version). This is what signet's users run. (Until 0.3.2 a shim
+  ;; stood in for signet's backend; signet has had its own since 0.7.0.)
+  test:signet-jvm {:doc  "signet's suite on the JVM, libsodium backend, on this nacljc. Needs ../signet"
+                   :task (shell {:dir "../signet"} "clojure" "-Sdeps"
+                                "{:aliases {:local-nacljc {:override-deps {com.github.franks42/nacljc {:local/root \"../nacljc\"}}}}}"
+                                "-M:test:sodium:local-nacljc")}
 
-  test:signet-jca {:doc  "signet's test suite on the JVM, backend = signet's own JCA (oracle)"
-                   :task (shell "clojure" "-Sdeps"
-                                (str "{:paths [\"integration\" \"../signet/test\"]"
-                                     " :deps {signet/signet {:local/root \"../signet\"}}}")
-                                "-M" "-m" "nacljc.signet-suite" "jca")}
+  test:signet-parity {:doc  "signet's JCA-vs-libsodium parity checks, on this nacljc. Needs ../signet"
+                      :task (shell {:dir "../signet"} "clojure" "-Sdeps"
+                                   (str "{:aliases {:t {:extra-paths [\"test\"]}"
+                                        " :local-nacljc {:override-deps {com.github.franks42/nacljc {:local/root \"../nacljc\"}}}}}")
+                                   "-M:t:sodium:local-nacljc" "-m" "signet.backend-parity" "sodium")}
 
-  test:signet-bb  {:doc  "signet's test suite on babashka, backend = libsodium"
-                   :task (let [cp (-> (shell {:out :string} "clojure" "-Spath" "-Sdeps"
-                                             (str "{:paths [] :deps {com.github.franks42/cedn {:mvn/version \"1.6.0\"}"
-                                                  " com.github.franks42/uuidv7 {:mvn/version \"0.7.2\"}}}"))
-                                      :out clojure.string/trim)]
-                           ;; versions mirror ../signet/bb.edn
-                           (shell "bb" "-cp" (str "integration/signet-shim:src:integration:../signet/src:../signet/test:" cp)
-                                  "-m" "nacljc.signet-suite" "libsodium"))}
+  test:signet-bb  {:doc  "signet's suite on babashka, libsodium backend, on this nacljc. Needs ../signet"
+                   :task (shell {:dir "../signet" :extra-env {"SIGNET_BACKEND" "sodium"}}
+                                "bb" "-e" (str "(babashka.deps/add-deps '{:deps {com.github.franks42/nacljc {:local/root \"../nacljc\"}}})"
+                                               "(require 'signet.suite) (signet.suite/-main \"sodium\")"))}
 
-  test:signet {:doc  "All signet runs: JCA oracle (JVM), libsodium (JVM), libsodium (bb). Needs ../signet"
-               :task (do (run 'test:signet-jca) (run 'test:signet-jvm) (run 'test:signet-bb))}
+  test:signet {:doc  "signet's suite on this nacljc: JVM, parity, babashka. Needs ../signet"
+               :task (do (run 'test:signet-jvm) (run 'test:signet-parity) (run 'test:signet-bb))}
 
   test:all  {:doc  "Every runtime (bb, JVM, nbb, WASM on Node, Scittle in Chromium), library loading, lint and format"
              :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb) (run 'test:loading) (run 'test:secrets)
@@ -96,18 +90,21 @@
                            (nil? ver) (fail "cannot parse the version from build.clj")
                            (not (re-matches (re-pattern "\\d+\\.\\d+\\.\\d+") ver))
                            (fail "version" (pr-str ver) "is not a stable X.Y.Z")
-                           (not (str/includes? (slurp "CHANGELOG.md") (str "## " ver)))
-                           (fail "CHANGELOG.md has no \"##" ver "\" section")
+                           ;; a dated heading, "## X.Y.Z (YYYY-MM-DD)": "(unreleased)" is refused
+                           (not (re-find (re-pattern (str "(?m)^## " (java.util.regex.Pattern/quote ver)
+                                                          " \\(\\d{4}-\\d{2}-\\d{2}\\)"))
+                                         (slurp "CHANGELOG.md")))
+                           (fail (str "CHANGELOG.md has no dated \"## " ver " (YYYY-MM-DD)\" section"))
                            :else (println "release-check: version" ver "is releasable")))}
 
   install   {:doc  "Install the jar (build.clj's version) into ~/.m2 (re-run after changes)"
              :task (shell "clojure" "-T:build" "install")}
 
   lint      {:doc  "clj-kondo on every Clojure file"
-             :task (shell "clj-kondo" "--lint" "src" "test" "integration" "build.clj" "bb.edn" "deps.edn")}
+             :task (shell "clj-kondo" "--lint" "src" "test" "build.clj" "bb.edn" "deps.edn")}
 
   fmt       {:doc  "cljfmt check on every Clojure file"
-             :task (shell "cljfmt" "check" "src" "test" "integration" "build.clj" "bb.edn" "deps.edn")}
+             :task (shell "cljfmt" "check" "src" "test" "build.clj" "bb.edn" "deps.edn")}
 
   fmt:fix   {:doc  "cljfmt fix on every Clojure file"
-             :task (shell "cljfmt" "fix" "src" "test" "integration" "build.clj" "bb.edn" "deps.edn")}}}
+             :task (shell "cljfmt" "fix" "src" "test" "build.clj" "bb.edn" "deps.edn")}}}

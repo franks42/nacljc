@@ -1,5 +1,11 @@
 # libsodium as a common crypto engine — feasibility
 
+> **Frozen snapshot (noted 2026-09-26).** This is the research as of
+> 2026-09-23. Its numbers (for example signet's suite at 102/436 on the
+> JVM) and the `integration/` shim it describes are historical: the shim
+> was removed in 0.3.2, when signet's own libsodium backend replaced it.
+> Current numbers are in the README.
+
 Research date: 2026-09-23. Motivation: signet (`../signet`), which uses
 canonical-edn and uuidv7, runs only on the JVM and on babashka, and its JCA
 backend has gaps on bb. The question was whether libsodium could be one

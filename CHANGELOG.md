@@ -2,6 +2,53 @@
 
 ## 0.4.0 (unreleased)
 
+## 0.3.2 (unreleased)
+
+From the review `docs/review-2026-09-26.md`. No API change.
+
+### Fixed
+
+- **X-Wing wipes a deeper stack.** ML-KEM-768 decapsulation needs close to
+  16 KiB of stack (libsodium's `indcpa_enc` alone has about 12 KB of
+  locals), so X-Wing operations now wipe 64 KiB (about 0.6 µs); the others
+  keep 16 KiB.
+- **Encapsulation wipes the stack too.** `xwing-encapsulate` opens no
+  secret but produces one, and 0.3.1 wiped only after operations that
+  opened a secret. So did `xwing-decapsulate` with a byte-array seed. Both
+  now always wipe.
+- **Cleanup no longer hides the real error.** `with-secret`: when the body
+  throws and destroying the secret fails too (a call on another thread
+  still uses it), the body's exception is rethrown, with the destroy error
+  attached as suppressed on the JVM. Internally, a failed close no longer
+  leaves the other secrets open or skips the stack wipe.
+- `release-check` requires a dated heading, `## X.Y.Z (YYYY-MM-DD)`;
+  before, `## X.Y.Z (unreleased)` passed.
+
+### Changed
+
+- **Every function states its purity and errors** in fixed wording, public
+  and private: `Pure.`, `Impure: <what it reads or writes>`, and
+  `Throws ex-info {:type ::x} when …` listing every `:type`. Functions that
+  take a key in a byte array or a secret say: pure for byte arrays; with a
+  secret, impure: reads it.
+- `need-xwing!` (private) is now `check-xwing` and returns the function:
+  it writes nothing, so it has no `!`.
+- `bb test:signet` now runs signet's own suite in `../signet` (JVM, parity,
+  bb) with nacljc replaced by this checkout. The shim that stood in for
+  signet's backend (`integration/`) is gone: it implemented signet's old
+  16-function contract, and signet has had its own libsodium backend since
+  0.7.0.
+
+### Documentation
+
+- Reading a secret after `secret-destroy!` crashes the JVM (a use after
+  free, SIGSEGV), unlike a read outside a call (`InternalError` on macOS);
+  README, `secret-destroy!` and `test:secrets` said otherwise.
+  `test:secrets` writes the JVM's crash logs to `target/`.
+- The `Secret` fields are internal (a comment on the deftype).
+- README: Windows is not supported or tested; the signet section and its
+  numbers are current.
+
 ## 0.3.1 (2026-09-25)
 
 ### Changed

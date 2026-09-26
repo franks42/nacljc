@@ -643,6 +643,59 @@
       (is (zero? (stackzeroes #(na/hkdf-sha-256 (b 32) nil nil 32)))))
     (run! na/secret-destroy! [seed k])))
 
+;; ---- 0.3.2: X-Wing wipes 64 KiB; cleanup never hides the real error ----
+
+(defn- wipes
+  "The sizes of the stack wipes f triggered, in order."
+  [f]
+  (mapv second (filter #(= :stackzero (first %)) (second (audited f)))))
+
+(deftest x-wing-wipes-a-deeper-stack
+  ;; ML-KEM needs close to 16 KiB of stack (docs/review-2026-09-26.md,
+  ;; finding 3), and encapsulation produces a secret without opening one.
+  (let [seed (b 32 3)
+        pk   (na/xwing-public-key seed)
+        ct   (:ciphertext (na/xwing-encapsulate pk))]
+    (na/with-secret [s (na/secret-import! (b 32 3))]
+      (is (= [65536] (wipes #(na/xwing-public-key s))) "public key from a secret seed"))
+    (is (= [65536] (wipes #(na/secret-destroy! (:shared-secret (na/xwing-encapsulate pk)))))
+        "encapsulation opens no secret but produces one")
+    (is (= [65536] (wipes #(na/secret-destroy! (na/xwing-decapsulate seed ct)))) "byte-array seed")
+    (na/with-secret [s (na/secret-import! (b 32 3))]
+      (is (= [65536] (wipes #(na/secret-destroy! (na/xwing-decapsulate s ct)))) "secret seed"))
+    (is (= [16384] (wipes #(na/with-secret [k (na/secret-random 32)] (na/hmac-sha-256 k (b 1)))))
+        "other operations keep 16 KiB")))
+
+(deftest with-secret-keeps-the-body-exception
+  ;; When the body throws and destroying the secret also fails (another
+  ;; call still uses it), the body's exception must win
+  ;; (docs/review-2026-09-26.md, finding 5).
+  (let [held (atom nil)
+        e    (try (na/with-secret [s (na/secret-random 32)]
+                    (reset! held s)
+                    (#'na/open-secret! s)                 ; simulate a call in progress
+                    (throw (ex-info "body" {:type ::body})))
+                  (catch #?(:clj Throwable :cljs :default) e e))]
+    (is (= ::body (:type (ex-data e))))
+    #?(:clj (is (= [:nacljc.core/secret-in-use]
+                   (map #(:type (ex-data %)) (.getSuppressed ^Throwable e)))
+                "the destroy error is kept as suppressed"))
+    (#'na/close-secret! @held)
+    (na/secret-destroy! @held)))
+
+(deftest a-failed-close-still-closes-the-rest-and-wipes
+  (let [a (na/secret-random 32) c (na/secret-random 32)
+        real @#'na/close-secret!
+        log  (atom [])]
+    (with-redefs [na/close-secret! (fn [s] (real s)
+                                     (when (identical? s a)
+                                       (throw (ex-info "close failed" {:type ::close}))))]
+      (binding [na/*audit* log]
+        (is (= ::close (error-type #(na/hkdf-sha-256 a c nil 32))) "the close error surfaces")))
+    (is (zero? (#'na/secret-uses c)) "the other secret was closed too")
+    (is (= 1 (count (filter #(= :stackzero (first %)) @log))) "the stack was still wiped")
+    (run! na/secret-destroy! [a c])))
+
 (deftest a-secret-in-use-cannot-be-destroyed
   (let [s (na/secret-random 32)]
     (#'na/open-secret! s)

@@ -14,15 +14,14 @@ Every engine produces byte-identical results. They reproduce the RFC test
 vectors, and they reproduce the outputs of signet's current JCA backend, so
 moving signet onto libsodium would change no signature, key or ciphertext.
 
-**signet runs on it unchanged.** A drop-in `signet.impl.jvm` built on
-`nacljc.core` (`integration/signet-shim`) passes signet's own, unmodified
-suite:
+**signet runs on it.** signet ships a libsodium backend on nacljc
+(`signet.impl.sodium`, since signet 0.7.0), byte-identical to its JCA
+backend. `bb test:signet` runs signet's own suite in `../signet` with
+nacljc replaced by this checkout. At 0.3.2 with signet 0.9.2:
 
-- JVM: 105 tests / 500 assertions, identical to signet's JCA backend.
-- babashka: 95 / 476, which is every test except secp256k1 (Bouncy Castle
-  cannot load on bb). With its own JCA backend, signet gets 16 errors on bb.
-
-signet itself now ships this backend as `signet.impl.sodium`.
+- JVM: 183 tests / 1000 assertions, plus 54 JCA-vs-libsodium parity checks.
+- babashka: 173 / 974, every test except secp256k1 (Bouncy Castle cannot
+  load on bb).
 
 ## The name
 
@@ -191,8 +190,11 @@ What stays with the caller:
   under a lock opens the read-only window on the first use and closes it
   after the last. `bb test:secrets` proves the protection in child
   processes: reading a secret's memory outside a call, or after
-  destroying it, **faults** (bb and nbb crash; the JVM raises
-  `InternalError` on macOS and aborts on Linux), while the same read inside a call works. Removing the
+  destroying it, **faults**, while the same read inside a call works. bb
+  and nbb crash either way. On the JVM, a read outside a call (the page is
+  still mapped, no-access) raises `InternalError` on macOS and aborts on
+  Linux; a read after `secret-destroy!` is a use after free and crashes
+  the whole JVM (SIGSEGV) on every platform. Removing the
   counter as an experiment crashed the JVM with SIGBUS when threads shared
   a secret.
 - **The stack is wiped after secret operations** (0.3.1). While C code
@@ -260,6 +262,7 @@ own.
 | Clojure CLI | — | 1.12.6 | |
 | babashka | **1.13.220** | 1.13.223, 1.13.224 | `babashka.ffi` was added in 1.13.220. **On Linux use the dynamically linked build** (`babashka-<v>-linux-amd64.tar.gz`). The static build (`…-static`), which `DeLaGuardo/setup-clojure` installs on Linux, cannot load shared libraries at all: `cannot load library`, even by absolute path. |
 | nbb | **1.6.213** | 1.6.213 | `babashka.ffi` built in. |
+| Operating system | macOS, Linux | macOS 26, Ubuntu 24.04 | **Windows is not supported or tested.** Loading fails cleanly with `::library-not-found` (there are no default Windows locations); `NACLJC_LIBSODIUM` pointing at a DLL may load, untested. |
 | Node.js (nbb) | **26.1** | 26.9.0 | nbb's FFI uses Node's built-in `node:ffi`. It is experimental and prints an `ExperimentalWarning`. |
 | libsodium.js (WASM) | 0.8.4 **sumo** | 0.8.4 | The *standard* 0.8.4 build has no HMAC, SHA-256 or HKDF. 0.8.4 does not export HKDF, so the tests implement it on HMAC (see the docs). |
 | Scittle (browser) | — | 0.8.33 | libsodium.js loads through a plain `<script>` tag, with no bundler. Only headless Chromium has been tested. |
@@ -313,10 +316,6 @@ test/nacljc/jca_crosscheck.clj  libsodium vs signet's JCA on random inputs
 test/wasm/check.cljs          libsodium.js on Node against the same vectors
 test/browser/index.html       Scittle page doing the same in a browser
 test/browser/run.mjs          Playwright runner for that page
-integration/signet-shim/signet/impl/jvm.clj
-                              drop-in libsodium backend for signet (same ns, 16 fns)
-integration/nacljc/signet_suite.clj
-                              runs signet's unmodified tests; asserts which backend loaded
 docs/feasibility.md           findings and recommendation
 ```
 

@@ -51,7 +51,10 @@
    ;; say "too old" rather than "not found".
    :linux ["libsodium.so.26" "libsodium.so.23" "libsodium.so"]})
 
-(defn- os []
+(defn- os
+  "The operating system, as :mac, :linux or another keyword. Impure: reads
+   the os.name property (process.platform on nbb)."
+  []
   (let [s (str #?(:clj (System/getProperty "os.name") :cljs js/process.platform))]
     (cond (re-find #"(?i)mac|darwin" s) :mac
           (re-find #"(?i)linux" s)      :linux
@@ -59,7 +62,8 @@
 
 (defn- configured-location
   "The explicitly configured library path and where it came from, or nil.
-   An empty value counts as not set."
+   An empty value counts as not set.
+   Impure: reads the environment variable and (JVM, bb) the system property."
   []
   (let [prop #?(:clj (System/getProperty "nacljc.libsodium") :cljs nil)
         env  #?(:clj (System/getenv "NACLJC_LIBSODIUM") :cljs (.-NACLJC_LIBSODIUM js/process.env))]
@@ -149,7 +153,10 @@
 ;; 0.2.0: X-Wing (ML-KEM-768 + X25519) arrived in libsodium 1.0.22, later
 ;; than nacljc's minimum. Bound only if present; otherwise the X-Wing
 ;; functions throw ::unsupported-by-libsodium.
-(defn- optional-cfn [c-name argtypes rettype]
+(defn- optional-cfn
+  "The C function c-name bound over FFI, or nil when this libsodium lacks
+   it. Impure: reads the loaded library's symbol table."
+  [c-name argtypes rettype]
   (when (ffi/find-symbol lib c-name)
     (ffi/cfn lib c-name argtypes rettype)))
 
@@ -184,7 +191,8 @@
     false))
 
 (defn libsodium-version
-  "The loaded libsodium's version string, e.g. \"1.0.22\"."
+  "The loaded libsodium's version string, e.g. \"1.0.22\". Pure (libsodium
+   is loaded once, when this namespace loads). Never throws."
   []
   (-version-string))
 
@@ -202,41 +210,55 @@
 ;; Input checks. They run before any native memory is allocated.
 ;; ---------------------------------------------------------------------------
 
-(defn- byte-array? [x]
+(defn- byte-array?
+  "Is x a platform byte array (byte[]; Int8Array or Uint8Array on nbb)?
+   Pure."
+  [x]
   #?(:clj  (bytes? x)
      :cljs (or (instance? js/Int8Array x) (instance? js/Uint8Array x))))
 
 (defn- type-name
   "The name of x's type, for error messages: never x's contents, which may
-   be secret."
+   be secret.
+   Pure."
   [x]
   (if (nil? x)
     "nil"
     #?(:clj  (.getName (class x))
        :cljs (or (some-> x .-constructor .-name) "unknown"))))
 
-(defn- empty-bytes [] #?(:clj (byte-array 0) :cljs (js/Int8Array. 0)))
+(defn- empty-bytes
+  "A new empty platform byte array. Pure."
+  [] #?(:clj (byte-array 0) :cljs (js/Int8Array. 0)))
 
 (defn- as-int8
   "The platform byte array babashka.ffi writes: byte[] as is; on nbb an
-   Int8Array view (not a copy) of a Uint8Array."
+   Int8Array view (not a copy) of a Uint8Array.
+   Pure: on nbb a view shares the array's memory, but nothing is written."
   [bs]
   #?(:clj  bs
      :cljs (if (instance? js/Int8Array bs)
              bs
              (js/Int8Array. (.-buffer bs) (.-byteOffset bs) (.-length bs)))))
 
-(defn- throw-bad-input [what expected x]
+(defn- throw-bad-input
+  "Throws ex-info {:type ::bad-input} naming what, what was expected, and
+   x's type (never its contents). Never returns."
+  [what expected x]
   (throw (ex-info (str "nacljc: " what " must be " expected ", got " (type-name x))
                   {:type ::bad-input :what what :expected expected :got (type-name x)})))
 
-(defn- throw-bad-length [what expected actual]
+(defn- throw-bad-length
+  "Throws ex-info {:type ::bad-length} naming what, the expected and the
+   actual size. Never returns."
+  [what expected actual]
   (throw (ex-info (str "nacljc: " what " must be " expected " bytes, got " actual)
                   {:type ::bad-length :what what :expected expected :actual actual})))
 
 (defn- check-bytes
   "x, checked to be a byte array (of exactly n bytes, if n is given), as
-   the platform byte array. Throws ::bad-input or ::bad-length."
+   the platform byte array. Throws ::bad-input or ::bad-length.
+   Pure."
   ([x what]
    (when-not (byte-array? x) (throw-bad-input what "a byte array" x))
    (as-int8 x))
@@ -246,12 +268,14 @@
      bs)))
 
 (defn- check-optional-bytes
-  "Like check-bytes, but nil means empty."
+  "Like check-bytes, but nil means empty.
+   Pure. Throws as check-bytes."
   [x what]
   (if (nil? x) (empty-bytes) (check-bytes x what)))
 
 (defn- check-count
-  "n, checked to be an integer in lo..hi. Throws ::bad-input or ::bad-length."
+  "n, checked to be an integer in lo..hi. Throws ::bad-input or ::bad-length.
+   Pure."
   [n lo hi what]
   (when-not (integer? n) (throw-bad-input what "an integer" n))
   (when-not (<= lo n hi) (throw-bad-length what (str lo ".." hi) n))
@@ -266,22 +290,30 @@
    [:close]. Addresses and sizes only, never contents."
   nil)
 
-(defn- audit! [event]
+(defn- audit!
+  "Record event when a test has bound *audit*. Impure: appends to that
+   atom."
+  [event]
   (when-let [a *audit*] (swap! a conj event)))
 
 (defn- wipe-native!
   "Zero n bytes of native memory at p with sodium_memzero, which the C
-   compiler may not optimise away."
+   compiler may not optimise away.
+   Impure: writes native memory."
   [p n]
   (-memzero p n)
   (audit! [:wipe (str (ffi/address p)) n]))
 
-(defn- open-scratch []
+(defn- open-scratch
+  "A new scratch arena for one call (see with-scratch). Impure: allocates
+   a confined native arena, which release! closes."
+  []
   {:arena (ffi/confined-arena) :live (volatile! [])})
 
 (defn- alloc!
   "n bytes (at least 1) of zeroed native memory in the scratch arena,
-   registered to be wiped."
+   registered to be wiped.
+   Impure: allocates in the arena and registers the buffer."
   [scratch n]
   (let [size (max 1 n)
         p    (ffi/alloc (:arena scratch) size)]
@@ -291,7 +323,8 @@
 
 (defn- release!
   "Wipe every buffer in the scratch arena, then close it, even if a wipe
-   throws."
+   throws.
+   Impure: wipes and frees the arena's memory."
   [{:keys [arena live]}]
   (try
     (doseq [[p size] @live]
@@ -303,25 +336,29 @@
 (defmacro ^:private with-scratch
   "Evaluate body with s bound to a fresh scratch arena. Every buffer in it
    is wiped and the arena released when body returns or throws. Nothing
-   allocated in it may escape: copy results out with read-bytes."
+   allocated in it may escape: copy results out with read-bytes.
+   Impure: allocates, wipes and frees native memory."
   [[s] & body]
   `(let [~s (open-scratch)]
      (try ~@body (finally (release! ~s)))))
 
 (defn- in!
-  "Copy platform byte array bs (already checked) into scratch memory."
+  "Copy platform byte array bs (already checked) into scratch memory.
+   Impure: allocates in the scratch arena and writes it."
   [scratch bs]
   (let [p (alloc! scratch (alength bs))]
     (when (pos? (alength bs)) (ffi/write-array p :char bs))
     p))
 
 (defn- read-bytes
-  "Copy n bytes out of native memory into a new platform byte array."
+  "Copy n bytes out of native memory into a new platform byte array.
+   Impure: reads native memory."
   [p n]
   (if (zero? n) (empty-bytes) (ffi/read-array p :char n)))
 
 (defn- check-rc
-  "Throw ::call-failed unless the libsodium call returned 0."
+  "Throw ::call-failed unless the libsodium call returned 0.
+   Pure."
   [rc c-fn]
   (when-not (zero? rc)
     (throw (ex-info (str "nacljc: " c-fn " failed") {:type ::call-failed :fn c-fn :rc rc}))))
@@ -340,6 +377,10 @@
 
 (def ^:private max-secret-bytes 65536)
 
+;; The fields are internal. deftype fields cannot be private, but reading
+;; ptr after secret-destroy! is a use after free (it crashes the process),
+;; and changing state (e.g. clearing :destroyed) would let a freed secret be
+;; used. Only this namespace touches them.
 (deftype Secret [ptr n lock state]
   Object
   (toString [_] (str "#nacljc/secret{:bytes " n "}")))
@@ -352,17 +393,21 @@
            (-pr-writer [s w _] (-write w (str s)))))
 
 (defn secret?
-  "Is x a nacljc secret (see secret-random, secret-import!)? Pure."
+  "Is x a nacljc secret (see secret-random, secret-import!)? Pure. Never
+   throws."
   [x]
   (instance? Secret x))
 
 (defmacro ^:private with-lock
-  "Serialise body on lock l (the JVM and bb; nbb is single-threaded)."
+  "Serialise body on lock l (the JVM and bb; nbb is single-threaded).
+   Impure: takes the lock."
   [l & body]
   #?(:clj `(locking ~l ~@body) :cljs `(do ~l ~@body)))
 
 (defn- protect!
-  "Set secret memory p to :noaccess, :readonly or :readwrite."
+  "Set secret memory p to :noaccess, :readonly or :readwrite.
+   Impure: changes the memory protection (mprotect).
+   Throws ex-info {:type ::call-failed} if libsodium reports a failure."
   [p mode]
   (let [rc (case mode
              :noaccess  (-mprotect-noaccess p)
@@ -374,7 +419,8 @@
 (defn- open-secret!
   "Open (or join) secret s's read-only window; returns its pointer. Every
    open-secret! must be paired with a close-secret!. Throws
-   ::destroyed-secret for a destroyed secret."
+   ::destroyed-secret for a destroyed secret.
+   Impure: writes the secret's use count and memory protection."
   [s]
   (with-lock (.-lock s)
     (let [{:keys [uses destroyed]} @(.-state s)]
@@ -385,18 +431,23 @@
       (.-ptr s))))
 
 (defn- close-secret!
-  "Leave secret s's read-only window; the last one out makes it no-access."
+  "Leave secret s's read-only window; the last one out makes it no-access.
+   Impure: writes the secret's use count and memory protection."
   [s]
   (with-lock (.-lock s)
     (when (zero? (:uses (swap! (.-state s) update :uses dec)))
       (protect! (.-ptr s) :noaccess))))
 
 #_{:clj-kondo/ignore [:unused-private-var]}
-(defn- secret-uses [s] (:uses @(.-state s)))
+(defn- secret-uses
+  "How many calls are using secret s right now (tests only). Impure: reads
+   its state."
+  [s] (:uses @(.-state s)))
 
 (defn- open-secrets!
   "Open the window of every secret among xs; returns the opened ones. If one
-   fails (destroyed), those already opened are closed again first."
+   fails (destroyed), those already opened are closed again first.
+   Impure: as open-secret!. Throws what open-secret! throws."
   [xs]
   (reduce (fn [opened x]
             (try (open-secret! x) (conj opened x)
@@ -414,26 +465,60 @@
    used: libsodium's functions need a few KiB, Argon2 works on the heap."
   16384)
 
+(def ^:private stackzero-bytes-deep
+  "Stack cleared after X-Wing operations. ML-KEM-768 decapsulation
+   re-encrypts internally: libsodium's indcpa_enc alone has about 12 KB of
+   locals (seven 1,536-byte polynomial vectors, three 512-byte
+   polynomials), plus its callers' and callees' frames, close to 16 KiB
+   (docs/review-2026-09-26.md, finding 3). About 0.6 us."
+  65536)
+
 (defn- stackzero!
-  "Clear stackzero-bytes of stack below the caller (sodium_stackzero)."
-  []
-  (-stackzero stackzero-bytes)
-  (audit! [:stackzero stackzero-bytes]))
+  "Clear n bytes of stack below the caller (sodium_stackzero).
+   Impure: writes the stack below the caller."
+  [n]
+  (-stackzero n)
+  (audit! [:stackzero n]))
+
+(defn- close-all!
+  "Close every secret in opened, even if a close throws; returns the first
+   exception thrown, or nil.
+   Impure: as close-secret!. Never throws."
+  [opened]
+  (reduce (fn [first-err s]
+            (try (close-secret! s) first-err
+                 (catch #?(:clj Throwable :cljs :default) e (or first-err e))))
+          nil opened))
+
+(defmacro ^:private with-open-secrets*
+  "Evaluate body with every secret among xs readable. Afterwards, also when
+   body throws: close every opened secret, and, when a secret was opened,
+   clear n bytes of the stack the operation used. An exception from body
+   wins over one from closing; a closing error alone is thrown.
+   Impure: opens and closes the secrets and wipes the stack."
+  [n xs & body]
+  `(let [opened# (open-secrets! ~xs)
+         [result# body-err#] (try [(do ~@body) nil]
+                                  (catch #?(:clj Throwable :cljs :default) e# [nil e#]))
+         close-err# (close-all! opened#)]
+     (when (and (seq opened#) (pos? ~n)) (stackzero! ~n))
+     (cond body-err#  (throw body-err#)
+           close-err# (throw close-err#)
+           :else      result#)))
 
 (defmacro ^:private with-open-secrets
-  "Evaluate body with every secret among xs readable; close them after,
-   also when body throws. When a secret was opened, then clear the stack
-   the operation used (stackzero!), on success and on error."
+  "with-open-secrets* with the default stack wipe (stackzero-bytes).
+   Impure: as with-open-secrets*."
   [xs & body]
-  `(let [opened# (open-secrets! ~xs)]
-     (try ~@body
-          (finally (run! close-secret! opened#)
-                   (when (seq opened#) (stackzero!))))))
+  `(with-open-secrets* stackzero-bytes ~xs ~@body))
 
 (defn- new-secret!
   "A new secret of n bytes. fill! writes them through the pointer it is
    given, while the memory is still read-write; the secret is no-access
-   when returned. If fill! throws, the memory is freed."
+   when returned. If fill! throws, the memory is freed.
+   Impure: allocates guarded memory and writes it.
+   Throws ex-info {:type ::call-failed} if sodium_malloc fails, and what
+   fill! throws."
   [n fill!]
   (let [raw (-secure-malloc n)]
     (when (ffi/null? raw)
@@ -451,7 +536,8 @@
 
 (defn- check-key
   "x as key material: a platform byte array or a secret, of exactly n bytes
-   when n is given. Throws ::bad-input or ::bad-length."
+   when n is given. Throws ::bad-input or ::bad-length.
+   Pure."
   ([x what]
    (if (secret? x) x (check-bytes x what)))
   ([x n what]
@@ -459,18 +545,22 @@
      (do (when-not (= n (.-n x)) (throw-bad-length what n (.-n x))) x)
      (check-bytes x n what))))
 
-(defn- key-length [k] (if (secret? k) (.-n k) (alength k)))
+(defn- key-length
+  "The size of key k, a byte array or a secret. Pure."
+  [k] (if (secret? k) (.-n k) (alength k)))
 
 (defn- key-in!
   "A pointer C can read key k through: a secret's own memory (its window
-   must be open, see with-open-secrets), or a scratch copy of a byte array."
+   must be open, see with-open-secrets), or a scratch copy of a byte array.
+   Impure: for a byte array, allocates in the scratch arena and writes it."
   [scratch k]
   (if (secret? k) (.-ptr k) (in! scratch k)))
 
 (defn- output!
   "n bytes that C writes through (write! pointer). When as-secret?, they go
    straight into a new secret and never touch the Clojure heap; otherwise
-   into scratch memory, returned as a byte array."
+   into scratch memory, returned as a byte array.
+   Impure: allocates (native scratch or guarded memory) and runs write!."
   [scratch as-secret? n write!]
   (if as-secret?
     (new-secret! n write!)
@@ -480,7 +570,9 @@
 
 (defn- seed-keypair!
   "Ed25519 public key and 64-byte secret key for seed (a byte array, or a
-   secret whose window is open), in scratch memory."
+   secret whose window is open), in scratch memory.
+   Impure: allocates in the scratch arena and writes it.
+   Throws ex-info {:type ::call-failed} if libsodium reports a failure."
   [scratch seed]
   (let [pk (alloc! scratch 32) sk (alloc! scratch 64)]
     (check-rc (-sign-seed-keypair pk sk (key-in! scratch seed)) "crypto_sign_seed_keypair")
@@ -493,7 +585,10 @@
 (def ^:private max-count 2147483647)
 
 (defn random-bytes
-  "n bytes (n >= 0) from libsodium's CSPRNG (the OS generator natively)."
+  "n bytes (n >= 0) from libsodium's CSPRNG (the OS generator natively).
+   Impure: draws from the CSPRNG.
+   Throws ex-info {:type ::bad-input} for a non-integer n and
+   {:type ::bad-length} for n outside 0..2^31-1."
   [n]
   (let [n (check-count n 0 max-count "random-bytes n")]
     (if (zero? n)
@@ -506,7 +601,9 @@
 (defn memzero!
   "Overwrite byte array bs with zeros, in place. Returns nil. Use it for
    secrets you no longer need. The JVM's garbage collector may already have
-   copied the array elsewhere; this clears only the array you hold."
+   copied the array elsewhere; this clears only the array you hold.
+   Impure: writes bs.
+   Throws ex-info {:type ::bad-input} unless bs is a byte array."
   [bs]
   (let [bs (check-bytes bs "memzero! argument")]
     #?(:clj  (java.util.Arrays/fill ^bytes bs (byte 0))
@@ -516,7 +613,9 @@
 (defn constant-time-equal?
   "Do byte arrays a and b hold the same bytes? For equal lengths the time
    taken does not depend on the contents (sodium_memcmp). Different lengths
-   return false at once: lengths are not treated as secret."
+   return false at once: lengths are not treated as secret.
+   Pure.
+   Throws ex-info {:type ::bad-input} unless both are byte arrays."
   [a b]
   (let [a (check-bytes a "constant-time-equal? a")
         b (check-bytes b "constant-time-equal? b")
@@ -529,7 +628,12 @@
 
 (defn ed25519-public-key
   "Ed25519 public key (32 bytes) for a 32-byte seed (a byte array or a
-   secret)."
+   secret).
+   Pure for byte-array keys; with a secret, impure: reads it.
+   Throws ex-info {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [seed]
   (let [seed (check-key seed 32 "Ed25519 seed")]
     (with-open-secrets [seed]
@@ -538,10 +642,15 @@
           (read-bytes pk 32))))))
 
 (defn ed25519-sign
-  "Ed25519 signature (64 bytes) of msg with the key for a 32-byte seed.
-   Deterministic. The full secret key is derived from the seed inside
-   native memory for each signature, so it never exists on the Clojure
-   heap and its public-key half cannot be mismatched."
+  "Ed25519 signature (64 bytes) of msg with the key for a 32-byte seed (a
+   byte array or a secret). Deterministic. The full secret key is derived
+   from the seed inside native memory for each signature, so it never
+   exists on the Clojure heap and its public-key half cannot be mismatched.
+   Pure for byte-array keys; with a secret, impure: reads it.
+   Throws ex-info {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [seed msg]
   (let [seed (check-key seed 32 "Ed25519 seed")
         msg  (check-bytes msg "message")]
@@ -554,9 +663,10 @@
 
 (defn ed25519-verify?
   "True if sig is a valid Ed25519 signature of msg under public key pk.
-   pk and sig are untrusted input: anything that is not a 32-byte and a
-   64-byte array gives false, never an exception. msg must be a byte array
-   (::bad-input otherwise)."
+   Pure.
+   Never throws for pk and sig: they are untrusted input, and anything that
+   is not a 32-byte and a 64-byte array gives false.
+   Throws ex-info {:type ::bad-input} unless msg is a byte array."
   [pk msg sig]
   (let [msg (check-bytes msg "message")]
     (boolean
@@ -567,9 +677,11 @@
                                           (in! s (as-int8 pk)))))))))
 
 (defn ed25519->x25519-public-key
-  "X25519 public key for an Ed25519 public key (the birational map). Throws
-   ::invalid-public-key for a point that is not on the curve or has small
-   order."
+  "X25519 public key for an Ed25519 public key (the birational map).
+   Pure.
+   Throws ex-info {:type ::invalid-public-key} for a point that is not on
+   the curve or has small order, {:type ::bad-input} for a non-byte-array
+   and {:type ::bad-length} unless it is 32 bytes."
   [pk]
   (let [pk (check-bytes pk 32 "Ed25519 public key")]
     (with-scratch [s]
@@ -581,7 +693,13 @@
 
 (defn ed25519->x25519-secret-key
   "X25519 secret key for the Ed25519 key with this 32-byte seed. A secret
-   seed gives a secret result; a byte-array seed gives a byte array."
+   seed gives a secret result; a byte-array seed gives a byte array.
+   Pure for byte-array keys; with a secret, impure: reads it, and
+   allocates guarded memory for the secret result (see secret-destroy!).
+   Throws ex-info {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [seed]
   (let [seed (check-key seed 32 "Ed25519 seed")]
     (with-open-secrets [seed]
@@ -591,10 +709,16 @@
                    #(check-rc (-sk-to-curve25519 % sk) "crypto_sign_ed25519_sk_to_curve25519")))))))
 
 (defn x25519
-  "X25519 shared secret (32 bytes) of our secret key and their public key.
-   A secret sk gives a secret result; a byte-array sk gives a byte array.
-   Throws ::low-order-point when the result is all zeros (their key has
-   small order); libsodium returns -1 for it."
+  "X25519 shared secret (32 bytes) of our secret key sk and their public
+   key pk. A secret sk gives a secret result; a byte-array sk gives a byte
+   array.
+   Pure for byte-array keys; with a secret, impure: reads it, and
+   allocates guarded memory for the secret result (see secret-destroy!).
+   Throws ex-info {:type ::low-order-point} when the result is all zeros
+   (their key has small order; libsodium returns -1),
+   {:type ::bad-input} for an input of the wrong type, {:type ::bad-length}
+   for one of the wrong size and {:type ::destroyed-secret} for a destroyed
+   secret."
   [sk pk]
   (let [sk (check-key sk 32 "X25519 secret key")
         pk (check-bytes pk 32 "X25519 public key")]
@@ -607,7 +731,12 @@
 
 (defn x25519-public-key
   "X25519 public key (32 bytes) for a 32-byte secret key (a byte array or a
-   secret)."
+   secret).
+   Pure for byte-array keys; with a secret, impure: reads it.
+   Throws ex-info {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [sk]
   (let [sk (check-key sk 32 "X25519 secret key")]
     (with-open-secrets [sk]
@@ -617,9 +746,15 @@
           (read-bytes o 32))))))
 
 (defn chacha20-poly1305-encrypt
-  "ChaCha20-Poly1305 (IETF, RFC 8439): 32-byte key, 12-byte nonce,
-   plaintext and associated data aad (nil means none). Returns ciphertext
-   || 16-byte tag. Never reuse a nonce with the same key."
+  "ChaCha20-Poly1305 (IETF, RFC 8439): 32-byte key (a byte array or a
+   secret), 12-byte nonce, plaintext and associated data aad (nil means
+   none). Returns ciphertext || 16-byte tag. Never reuse a nonce with the
+   same key.
+   Pure for byte-array keys; with a secret, impure: reads it.
+   Throws ex-info {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [k nonce pt aad]
   (let [k     (check-key k 32 "ChaCha20-Poly1305 key")
         nonce (check-bytes nonce 12 "ChaCha20-Poly1305 nonce")
@@ -635,9 +770,13 @@
           (read-bytes c n))))))
 
 (defn chacha20-poly1305-decrypt
-  "Inverse of chacha20-poly1305-encrypt. Throws ::auth-failed when the
-   ciphertext, nonce, key or aad do not match; ::bad-length when the
-   ciphertext is shorter than the 16-byte tag."
+  "Inverse of chacha20-poly1305-encrypt.
+   Pure for byte-array keys; with a secret, impure: reads it.
+   Throws ex-info {:type ::auth-failed} when the ciphertext, nonce, key or
+   aad do not match; {:type ::bad-length} when the ciphertext is shorter
+   than the 16-byte tag or another input has the wrong size;
+   {:type ::bad-input} for an input of the wrong type; and
+   {:type ::destroyed-secret} for a destroyed secret."
   [k nonce ct aad]
   (let [k     (check-key k 32 "ChaCha20-Poly1305 key")
         nonce (check-bytes nonce 12 "ChaCha20-Poly1305 nonce")
@@ -659,7 +798,13 @@
    salt equals the RFC's default of 32 zero bytes). ikm and salt may each
    be a byte array or a secret (a salt can be secret: Noise's chaining key
    is the salt of every MixKey). The result is a secret if ikm or salt is
-   one, else a byte array."
+   one, else a byte array.
+   Pure for byte arrays; with a secret, impure: reads it, and allocates
+   guarded memory for the secret result (see secret-destroy!).
+   Throws ex-info {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for len outside 1..8160, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [ikm salt info len]
   (let [ikm  (check-key ikm "HKDF ikm")
         salt (if (secret? salt) salt (check-optional-bytes salt "HKDF salt"))
@@ -675,7 +820,11 @@
                               "crypto_kdf_hkdf_sha256_expand")))))))
 
 (defn sha-256
-  "SHA-256 digest (32 bytes) of data."
+  "SHA-256 digest (32 bytes) of data.
+   Pure.
+   Throws ex-info {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, and {:type ::call-failed}
+   if libsodium reports a failure."
   [data]
   (let [data (check-bytes data "SHA-256 input")]
     (with-scratch [s]
@@ -685,7 +834,12 @@
 
 (defn hmac-sha-256
   "HMAC-SHA-256 (32 bytes) of data under key k (a byte array or a secret, of
-   any length). The tag is a byte array: it is meant to be sent."
+   any length). The tag is a byte array: it is meant to be sent.
+   Pure for byte-array keys; with a secret, impure: reads it.
+   Throws ex-info {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [k data]
   (let [k    (check-key k "HMAC key")
         data (check-bytes data "HMAC input")]
@@ -707,17 +861,23 @@
    straight into guarded memory: the bytes never exist on the Clojure heap.
    Impure: draws from the CSPRNG and allocates guarded memory, which must be
    released with secret-destroy! (or use with-secret).
-   Throws ::bad-input for a non-integer n, ::bad-length outside 1..65536."
+   Throws ex-info {:type ::bad-input} for a non-integer n,
+   {:type ::bad-length} for n outside 1..65536, and {:type ::call-failed}
+   if sodium_malloc fails."
   [n]
   (let [n (check-count n 1 max-secret-bytes "secret-random n")]
     (new-secret! n #(-randombytes-buf % n))))
 
 (defn secret-import!
-  "A new secret holding a copy of byte array bs (1..65536 bytes). bs itself
-   is then overwritten with zeros, so the secret is the only copy nacljc
-   knows of (the JVM's garbage collector may have copied bs earlier).
+  "A new secret holding a copy of byte array bs (1..65536 bytes). On
+   success bs is then overwritten with zeros, so the secret is the only copy
+   nacljc knows of (the JVM's garbage collector may have copied bs
+   earlier). On failure bs is left as it was: it may be the caller's only
+   copy.
    Impure: writes bs, allocates guarded memory (see secret-destroy!).
-   Throws ::bad-input or ::bad-length."
+   Throws ex-info {:type ::bad-input} unless bs is a byte array,
+   {:type ::bad-length} unless it has 1..65536 bytes, and
+   {:type ::call-failed} if sodium_malloc fails."
   [bs]
   (let [bs' (check-bytes bs "secret-import! argument")
         n   (alength bs')]
@@ -731,9 +891,11 @@
 (defn secret-export
   "The secret's bytes, as a new byte array on the Clojure heap. This is the
    only way bytes leave a secret, so it requires the acknowledgement map
-   {:i-understand :exposes-secret}: without it, it throws
-   ::export-not-acknowledged. Wipe the result with memzero! when done.
-   Impure: reads the secret. Throws ::destroyed-secret for a destroyed one."
+   {:i-understand :exposes-secret}. Wipe the result with memzero! when done.
+   Impure: reads the secret.
+   Throws ex-info {:type ::export-not-acknowledged} without the exact
+   acknowledgement, {:type ::bad-input} unless s is a secret, and
+   {:type ::destroyed-secret} for a destroyed one."
   [s ack]
   (when-not (secret? s) (throw-bad-input "secret-export argument" "a secret" s))
   (when-not (= export-acknowledgement ack)
@@ -745,8 +907,11 @@
 (defn secret-destroy!
   "Zero and free the secret's guarded memory (sodium_free, which also checks
    its canaries). Later use throws ::destroyed-secret. Destroying again is a
-   no-op. Impure: frees memory. Throws ::secret-in-use while a call on
-   another thread is using it."
+   no-op. Reading the memory after this (through the internal fields) is a
+   use after free and crashes the process, on the JVM too.
+   Impure: frees memory.
+   Throws ex-info {:type ::secret-in-use} while a call on another thread is
+   using it, and {:type ::bad-input} unless s is a secret."
   [s]
   (when-not (secret? s) (throw-bad-input "secret-destroy! argument" "a secret" s))
   (with-lock (.-lock s)
@@ -760,13 +925,15 @@
                         nil)))))
 
 (defn secret-length
-  "The secret's size in bytes. Pure."
+  "The secret's size in bytes. Pure (the size never changes).
+   Throws ex-info {:type ::bad-input} unless s is a secret."
   [s]
   (when-not (secret? s) (throw-bad-input "secret-length argument" "a secret" s))
   (.-n s))
 
 (defn secret-destroyed?
-  "Has secret-destroy! been called on s? Impure: reads its state."
+  "Has secret-destroy! been called on s? Impure: reads its state.
+   Throws ex-info {:type ::bad-input} unless s is a secret."
   [s]
   (when-not (secret? s) (throw-bad-input "secret-destroyed? argument" "a secret" s))
   (boolean (:destroyed @(.-state s))))
@@ -779,9 +946,10 @@
    never touch the Clojure heap; s itself is left unchanged (destroy it
    when done). Returns a vector of secrets.
    Impure: reads s and allocates guarded memory (see secret-destroy!).
-   Throws ::bad-input unless s is a secret and lengths a sequence of
-   integers; ::bad-length unless every length is positive and they add up
-   to s's size; ::destroyed-secret for a destroyed s."
+   Throws ex-info {:type ::bad-input} unless s is a secret and lengths a
+   sequence of integers; {:type ::bad-length} unless every length is
+   positive and they add up to s's size; {:type ::destroyed-secret} for a
+   destroyed s; and {:type ::call-failed} if sodium_malloc fails."
   [s lengths]
   (when-not (secret? s) (throw-bad-input "secret-split secret" "a secret" s))
   (when-not (and (sequential? lengths) (seq lengths) (every? integer? lengths))
@@ -806,10 +974,24 @@
 
 (defmacro with-secret
   "(with-secret [s (secret-random 32)] body…): evaluate body with s bound,
-   then secret-destroy! it, also when body throws."
+   then secret-destroy! it, also when body throws.
+   Impure: destroys s. An exception from body is rethrown as is; if
+   destroying also fails (::secret-in-use, a call on another thread still
+   uses s), that error is attached to it as suppressed on the JVM and
+   otherwise dropped. Throws what secret-destroy! throws when body did not."
   [[sym init] & body]
-  `(let [~sym ~init]
-     (try ~@body (finally (secret-destroy! ~sym)))))
+  ;; Only public vars in the expansion: it runs in the caller's namespace.
+  `(let [~sym ~init
+         [result# body-err#] (try [(do ~@body) nil]
+                                  (catch #?(:clj Throwable :cljs :default) e# [nil e#]))
+         destroy-err# (try (secret-destroy! ~sym) nil
+                           (catch #?(:clj Throwable :cljs :default) e# e#))]
+     (cond
+       body-err#    (do #?(:clj (when destroy-err#
+                                  (.addSuppressed ^Throwable body-err# ^Throwable destroy-err#)))
+                        (throw body-err#))
+       destroy-err# (throw destroy-err#)
+       :else        result#)))
 
 ;; ---------------------------------------------------------------------------
 ;; AEGIS-256 (0.2.0; RFC 10032, 256-bit tags)
@@ -820,7 +1002,11 @@
    nonce, plaintext and associated data aad (nil means none). Returns
    ciphertext || 32-byte tag. A 256-bit nonce may be random with no
    practical limit, but never reuse one with the same key.
-   Throws ::bad-input or ::bad-length."
+   Pure for byte-array keys; with a secret, impure: reads it.
+   Throws ex-info {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [k nonce pt aad]
   (let [k     (check-key k 32 "AEGIS-256 key")
         nonce (check-bytes nonce 32 "AEGIS-256 nonce")
@@ -836,9 +1022,13 @@
           (read-bytes c n))))))
 
 (defn aegis256-decrypt
-  "Inverse of aegis256-encrypt. Throws ::auth-failed when the ciphertext,
-   nonce, key or aad do not match; ::bad-length when the ciphertext is
-   shorter than the 32-byte tag."
+  "Inverse of aegis256-encrypt.
+   Pure for byte-array keys; with a secret, impure: reads it.
+   Throws ex-info {:type ::auth-failed} when the ciphertext, nonce, key or
+   aad do not match; {:type ::bad-length} when the ciphertext is shorter
+   than the 32-byte tag or another input has the wrong size;
+   {:type ::bad-input} for an input of the wrong type; and
+   {:type ::destroyed-secret} for a destroyed secret."
   [k nonce ct aad]
   (let [k     (check-key k 32 "AEGIS-256 key")
         nonce (check-bytes nonce 32 "AEGIS-256 nonce")
@@ -858,48 +1048,69 @@
 ;; X-Wing KEM (0.2.0; ML-KEM-768 + X25519; libsodium >= 1.0.22)
 ;; ---------------------------------------------------------------------------
 
-(defn- need-xwing! [f c-name]
+(defn- check-xwing
+  "f, the bound X-Wing C function, or throws ::unsupported-by-libsodium when
+   this libsodium lacks it (X-Wing arrived in 1.0.22).
+   Pure."
+  [f c-name]
   (when-not f
     (throw (ex-info (str "nacljc: X-Wing needs libsodium >= 1.0.22 (" c-name " not found); loaded "
                          (libsodium-version))
-                    {:type ::unsupported-by-libsodium :fn c-name :found (libsodium-version)}))))
+                    {:type ::unsupported-by-libsodium :fn c-name :found (libsodium-version)})))
+  f)
 
 (defn xwing-public-key
   "X-Wing public key (1216 bytes) for a 32-byte seed (a byte array or a
-   secret). The seed is the X-Wing secret key. Throws ::bad-input,
-   ::bad-length or ::unsupported-by-libsodium."
+   secret). The seed is the X-Wing secret key.
+   Pure for byte-array keys; with a secret, impure: reads it.
+   Throws ex-info {:type ::unsupported-by-libsodium} before libsodium
+   1.0.22, and {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [seed]
-  (need-xwing! -xwing-seed-keypair "crypto_kem_xwing_seed_keypair")
+  (check-xwing -xwing-seed-keypair "crypto_kem_xwing_seed_keypair")
   (let [seed (check-key seed 32 "X-Wing seed")]
-    (with-open-secrets [seed]
+    (with-open-secrets* stackzero-bytes-deep [seed]
       (with-scratch [s]
         (let [pk (alloc! s 1216) sk (alloc! s 32)]
           (check-rc (-xwing-seed-keypair pk sk (key-in! s seed)) "crypto_kem_xwing_seed_keypair")
           (read-bytes pk 1216))))))
 
-(defn- encapsulate [pk enc!]
+(defn- encapsulate
+  "Run enc! into a fresh secret and a ciphertext. Opens no secret, but
+   produces one: the stack is wiped afterwards all the same.
+   Impure: runs enc!, allocates guarded memory, wipes the stack."
+  [pk enc!]
   (let [pk (check-bytes pk 1216 "X-Wing public key")]
-    (with-scratch [s]
-      (let [ct (alloc! s 1120)
-            ss (new-secret! 32 #(enc! ct % (in! s pk)))]
-        {:ciphertext (read-bytes ct 1120) :shared-secret ss}))))
+    (try
+      (with-scratch [s]
+        (let [ct (alloc! s 1120)
+              ss (new-secret! 32 #(enc! ct % (in! s pk)))]
+          {:ciphertext (read-bytes ct 1120) :shared-secret ss}))
+      (finally (stackzero! stackzero-bytes-deep)))))
 
 (defn xwing-encapsulate
   "Encapsulate a fresh shared secret to X-Wing public key pk (1216 bytes).
    Returns {:ciphertext <1120 bytes> :shared-secret <secret>}: the shared
-   secret is always a secret object. Impure: draws from the CSPRNG and
-   allocates guarded memory. Throws ::bad-input, ::bad-length or
-   ::unsupported-by-libsodium."
+   secret is always a secret object.
+   Impure: draws from the CSPRNG and allocates guarded memory (see
+   secret-destroy!).
+   Throws ex-info {:type ::unsupported-by-libsodium} before libsodium
+   1.0.22, and {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, and {:type ::call-failed}
+   if libsodium reports a failure."
   [pk]
-  (need-xwing! -xwing-enc "crypto_kem_xwing_enc")
+  (check-xwing -xwing-enc "crypto_kem_xwing_enc")
   (encapsulate pk (fn [ct ss pkp] (check-rc (-xwing-enc ct ss pkp) "crypto_kem_xwing_enc"))))
 
 #_{:clj-kondo/ignore [:unused-private-var]}
 (defn- xwing-encapsulate-deterministic
   "xwing-encapsulate with caller-chosen 64-byte randomness, for known-answer
-   tests only. Private on purpose: reusing randomness breaks the KEM."
+   tests only. Private on purpose: reusing randomness breaks the KEM.
+   Impure: allocates guarded memory for the result."
   [pk randomness]
-  (need-xwing! -xwing-enc-deterministic "crypto_kem_xwing_enc_deterministic")
+  (check-xwing -xwing-enc-deterministic "crypto_kem_xwing_enc_deterministic")
   (let [r (check-bytes randomness 64 "X-Wing randomness")]
     (with-scratch [s]
       (let [rp (in! s r)]
@@ -912,12 +1123,23 @@
    seed (a byte array or a secret). Always returns a secret object. A
    ciphertext that was not made for this key gives an unrelated secret
    (ML-KEM's implicit rejection), not an error: authenticate what the key
-   protects. Throws ::bad-input, ::bad-length or ::unsupported-by-libsodium."
+   protects.
+   Pure for a byte-array seed apart from allocating guarded memory for the
+   result (see secret-destroy!); with a secret seed, impure: reads it too.
+   Throws ex-info {:type ::unsupported-by-libsodium} before libsodium
+   1.0.22, and {:type ::bad-input} for an input of the wrong type,
+   {:type ::bad-length} for one of the wrong size, {:type ::destroyed-secret}
+   for a destroyed secret, and {:type ::call-failed} if libsodium reports a
+   failure."
   [seed ct]
-  (need-xwing! -xwing-dec "crypto_kem_xwing_dec")
+  (check-xwing -xwing-dec "crypto_kem_xwing_dec")
   (let [seed (check-key seed 32 "X-Wing seed")
         ct   (check-bytes ct 1120 "X-Wing ciphertext")]
-    (with-open-secrets [seed]
-      (with-scratch [s]
-        (new-secret! 32 #(check-rc (-xwing-dec % (in! s ct) (key-in! s seed)) "crypto_kem_xwing_dec"))))))
+    ;; The seed may be a byte array (nothing opened), but the result is a
+    ;; secret either way: always wipe.
+    (try
+      (with-open-secrets* 0 [seed]
+        (with-scratch [s]
+          (new-secret! 32 #(check-rc (-xwing-dec % (in! s ct) (key-in! s seed)) "crypto_kem_xwing_dec"))))
+      (finally (stackzero! stackzero-bytes-deep)))))
 
