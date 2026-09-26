@@ -9,6 +9,7 @@ Public repo: https://github.com/franks42/nacljc.
 - Releases: a `vX.Y.Z` tag triggers `release.yml`. It runs
   `bb release-check` and the tests, deploys to Clojars, then runs
   `bb test:clojars X.Y.Z` against the jar fetched back from Clojars.
+- **main is 0.4.0-SNAPSHOT** (nothing planned yet; signet 0.9.1 uses 0.3.1).
 - **0.3.1 (released 2026-09-25):** `sodium_stackzero` (16 KiB) after every
   operation that reads a secret, in `with-open-secrets`; signet 0.9.1 uses it.
 - **0.3.0 (released 2026-09-25):** `secret-split` and a secret HKDF salt,
