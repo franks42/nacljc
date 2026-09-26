@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
 ## 0.3.2 (2026-09-26)
 
 From the review `docs/review-2026-09-26.md`. No API change.

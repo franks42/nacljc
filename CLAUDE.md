@@ -9,6 +9,7 @@ Public repo: https://github.com/franks42/nacljc.
 - Releases: a `vX.Y.Z` tag triggers `release.yml`. It runs
   `bb release-check` and the tests, deploys to Clojars, then runs
   `bb test:clojars X.Y.Z` against the jar fetched back from Clojars.
+- **main is 0.4.0-SNAPSHOT.**
 - **0.3.2 (released 2026-09-26):** review fixes (X-Wing 64 KiB stack wipe,
   exception-preserving cleanup, purity/throws docstrings everywhere,
   `test:signet` on signet's own suite). Planned for 0.4.0: CI against Ubuntu's libsodium 1.0.18 (the
