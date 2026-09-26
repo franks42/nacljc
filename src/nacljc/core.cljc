@@ -97,6 +97,9 @@
 (ffi/defcfn ^:private -version-string {:library lib} "sodium_version_string" [] :string)
 (ffi/defcfn ^:private -memzero {:library lib} "sodium_memzero" [:pointer :size_t] :void)
 (ffi/defcfn ^:private -memcmp {:library lib} "sodium_memcmp" [:pointer :pointer :size_t] :int)
+;; 0.3.0: a += b (little-endian, constant time). Onto zeroed memory it
+;; copies b; libsodium has no memcpy (see secret-split).
+(ffi/defcfn ^:private -sodium-add {:library lib} "sodium_add" [:pointer :pointer :size_t] :void)
 (ffi/defcfn ^:private -randombytes-buf {:library lib} "randombytes_buf" [:pointer :size_t] :void)
 (ffi/defcfn ^:private -sign-seed-keypair {:library lib} "crypto_sign_seed_keypair"
   [:pointer :pointer :pointer] :int)
@@ -633,19 +636,21 @@
 (defn hkdf-sha-256
   "HKDF-SHA-256 (RFC 5869), extract then expand: len bytes (1..8160) from
    input keying material ikm, with salt and info (nil means empty; an empty
-   salt equals the RFC's default of 32 zero bytes). A secret ikm gives a
-   secret result; a byte-array ikm gives a byte array."
+   salt equals the RFC's default of 32 zero bytes). ikm and salt may each
+   be a byte array or a secret (a salt can be secret: Noise's chaining key
+   is the salt of every MixKey). The result is a secret if ikm or salt is
+   one, else a byte array."
   [ikm salt info len]
   (let [ikm  (check-key ikm "HKDF ikm")
-        salt (check-optional-bytes salt "HKDF salt")
+        salt (if (secret? salt) salt (check-optional-bytes salt "HKDF salt"))
         info (check-optional-bytes info "HKDF info")
         len  (check-count len 1 8160 "HKDF output length")]
-    (with-open-secrets [ikm]
+    (with-open-secrets [ikm salt]
       (with-scratch [s]
         (let [prk (alloc! s 32)]
-          (check-rc (-hkdf-extract prk (in! s salt) (alength salt) (key-in! s ikm) (key-length ikm))
+          (check-rc (-hkdf-extract prk (key-in! s salt) (key-length salt) (key-in! s ikm) (key-length ikm))
                     "crypto_kdf_hkdf_sha256_extract")
-          (output! s (secret? ikm) len
+          (output! s (or (secret? ikm) (secret? salt)) len
                    #(check-rc (-hkdf-expand % len (in! s info) (alength info) prk)
                               "crypto_kdf_hkdf_sha256_expand")))))))
 
@@ -745,6 +750,39 @@
   [s]
   (when-not (secret? s) (throw-bad-input "secret-destroyed? argument" "a secret" s))
   (boolean (:destroyed @(.-state s))))
+
+(defn secret-split
+  "New secrets holding consecutive parts of secret s, one per length in
+   lengths (a non-empty sequence of positive integers adding up to s's
+   size). For example (secret-split s64 [32 32]) splits a 64-byte HKDF
+   output into two keys. The bytes are copied inside guarded memory and
+   never touch the Clojure heap; s itself is left unchanged (destroy it
+   when done). Returns a vector of secrets.
+   Impure: reads s and allocates guarded memory (see secret-destroy!).
+   Throws ::bad-input unless s is a secret and lengths a sequence of
+   integers; ::bad-length unless every length is positive and they add up
+   to s's size; ::destroyed-secret for a destroyed s."
+  [s lengths]
+  (when-not (secret? s) (throw-bad-input "secret-split secret" "a secret" s))
+  (when-not (and (sequential? lengths) (seq lengths) (every? integer? lengths))
+    (throw-bad-input "secret-split lengths" "a non-empty sequence of integers" lengths))
+  (when-not (every? pos? lengths)
+    (throw-bad-length "secret-split lengths" "positive" (apply min lengths)))
+  (when-not (= (.-n s) (reduce + lengths))
+    (throw-bad-length "secret-split lengths (sum)" (.-n s) (reduce + lengths)))
+  (with-open-secrets [s]
+    (let [offsets (reductions + 0 lengths)]
+      (reduce (fn [parts [off n]]
+                (try
+                  ;; libsodium has no memcpy, and ffi/copy goes through a JS
+                  ;; buffer on nbb. sodium_add onto zeroed memory copies in
+                  ;; place on every runtime (sodium_malloc fills with 0xdb).
+                  (conj parts (new-secret! n #(do (-memzero % n)
+                                                  (-sodium-add % (ffi/slice (.-ptr s) off n) n))))
+                  (catch #?(:clj Throwable :cljs :default) e
+                    (run! secret-destroy! parts)
+                    (throw e))))
+              [] (map vector offsets lengths)))))
 
 (defmacro with-secret
   "(with-secret [s (secret-random 32)] body…): evaluate body with s bound,

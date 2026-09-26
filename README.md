@@ -84,7 +84,7 @@ and bb. On nbb, `Int8Array` or `Uint8Array` in, and `Int8Array` out.
 | `(x25519-public-key sk)` | secret key 32 | public key 32 |
 | `(chacha20-poly1305-encrypt k nonce pt aad)` | key 32, nonce 12, plaintext, aad (nil = none) | ciphertext ‖ 16-byte tag |
 | `(chacha20-poly1305-decrypt k nonce ct aad)` | key 32, nonce 12, ciphertext ≥ 16, aad | plaintext |
-| `(hkdf-sha-256 ikm salt info len)` | salt and info may be nil (empty); len 1..8160 | `len` bytes (RFC 5869) |
+| `(hkdf-sha-256 ikm salt info len)` | salt and info may be nil (empty); ikm and salt may be secrets (0.3.0: salt); len 1..8160 | `len` bytes (RFC 5869); a secret if ikm or salt is one |
 | `(hmac-sha-256 k data)` | key of any length | 32 |
 | `(sha-256 data)` | | 32 |
 | `(random-bytes n)` | n ≥ 0 | n bytes from libsodium's CSPRNG |
@@ -108,12 +108,16 @@ instead of the Clojure heap:
 | `(secret-destroy! s)` | zeroes and frees it (`sodium_free`); later use throws `::destroyed-secret`; again is a no-op |
 | `(with-secret [s (secret-random 32)] …)` | destroys `s` on exit, also when the body throws |
 | `(secret? x)`, `(secret-length s)`, `(secret-destroyed? s)` | |
+| `(secret-split s [32 32])` | 0.3.0: new secrets holding consecutive parts of `s` (lengths must add up to its size); copied inside guarded memory; `s` is unchanged |
 
 Every function that takes key material (a seed, a secret key, an AEAD, HMAC
 or HKDF key) accepts a secret wherever it accepts a byte array. **Secrets
 stay secrets:** when a secret-key *input* is a secret, a result that is
 itself secret key material comes back as a secret too. That covers the
-X25519 shared secret, `ed25519->x25519-secret-key` and HKDF output.
+X25519 shared secret, `ed25519->x25519-secret-key` and HKDF output (a
+secret ikm *or*, since 0.3.0, a secret salt: Noise's chaining key is the
+salt of each MixKey). `secret-split` then turns one HKDF output into
+several keys without leaving guarded memory.
 Public results (public keys, signatures, ciphertexts, MAC tags) are byte
 arrays. Callers that pass byte arrays get byte arrays, exactly as in 0.1.0.
 X-Wing shared secrets are always secrets.

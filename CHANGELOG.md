@@ -2,6 +2,25 @@
 
 ## 0.3.0 (unreleased)
 
+For signet 0.9.0's sessions, whose chaining key and transport keys stay in
+guarded memory.
+
+### Added
+
+- **`secret-split`:** new secrets holding consecutive parts of a secret,
+  e.g. `(secret-split s64 [32 32])`. The lengths must be positive and add
+  up to the secret's size. The bytes are copied inside guarded memory
+  (`sodium_memzero`, then `sodium_add` onto the zeroed part, since
+  libsodium has no memcpy and `ffi/copy` goes through a JS buffer on nbb).
+  The source is unchanged. If a part cannot be allocated, the parts
+  already made are freed.
+
+### Changed
+
+- **`hkdf-sha-256` accepts a secret salt.** The result is a secret if the
+  ikm or the salt is one (before, only a secret ikm gave a secret). Byte
+  inputs behave exactly as in 0.2.0.
+
 ## 0.2.0 (2026-09-24)
 
 ### Added

@@ -86,7 +86,9 @@
      aegis256-encrypt aegis256-decrypt
      xwing-public-key xwing-encapsulate xwing-decapsulate
      secret? secret-random secret-import! secret-export secret-destroy!
-     secret-length secret-destroyed? with-secret})
+     secret-length secret-destroyed? with-secret
+     ;; 0.3.0
+     secret-split})
 
 (deftest public-api-is-exactly-the-documented-one
   (is (= api (set (keys (ns-publics 'nacljc.core))))
@@ -514,6 +516,9 @@
         (na/ed25519-public-key seed)
         (na/chacha20-poly1305-encrypt k (b 12) (utf8 "m") nil)
         (na/secret-destroy! (na/hkdf-sha-256 k nil nil 32))
+        (na/secret-destroy! (na/hkdf-sha-256 (b 0) k nil 64))
+        (run! na/secret-destroy! (na/secret-split k [16 16]))
+        (error-type #(na/secret-split k [16 8]))
         (na/secret-destroy! (na/x25519 k (na/x25519-public-key seed)))
         (reveal k)
         (error-type #(na/chacha20-poly1305-decrypt k (b 12) (b 20) nil))
@@ -524,6 +529,87 @@
     (is (= (count (filter #(= :secret-alloc (first %)) @log))
            (count (filter #(= :free (first %)) @log)))
         "every secret allocated here was freed")))
+
+;; ---- 0.3.0: secret HKDF salt, secret-split ----
+
+(deftest rfc5869-hkdf-with-a-secret-salt
+  (let [{:keys [ikm salt info len okm]} (get-in vectors [:rfc :hkdf])]
+    (testing "secret salt, byte ikm"
+      (na/with-secret [salt-s (secret-of salt)]
+        (let [out (na/hkdf-sha-256 (unhex ikm) salt-s (unhex info) len)]
+          (is (na/secret? out) "a secret salt gives a secret result")
+          (is (= okm (hex (reveal out))))
+          (na/secret-destroy! out))))
+    (testing "secret salt and secret ikm"
+      (na/with-secret [salt-s (secret-of salt)]
+        (na/with-secret [ikm-s (secret-of ikm)]
+          (na/with-secret [out (na/hkdf-sha-256 ikm-s salt-s (unhex info) len)]
+            (is (= okm (hex (reveal out))))))))
+    (testing "Noise's Split: empty ikm, secret salt"
+      (let [ck (b 32 9)]
+        (na/with-secret [ck-s (secret-of (b 32 9))]
+          (na/with-secret [out (na/hkdf-sha-256 (b 0) ck-s nil 64)]
+            (is (= (hex (na/hkdf-sha-256 (b 0) ck nil 64)) (hex (reveal out))))))))
+    (testing "a destroyed salt is refused"
+      (let [salt-s (secret-of salt)]
+        (na/secret-destroy! salt-s)
+        (is (= :nacljc.core/destroyed-secret
+               (error-type #(na/hkdf-sha-256 (unhex ikm) salt-s nil 32))))))))
+
+(deftest secret-split-copies-the-parts
+  (let [bs (bytes-from (range 64))]
+    (na/with-secret [s (secret-of (bytes-from (range 64)))]
+      (let [[a c] (na/secret-split s [32 32])]
+        (is (= [32 32] (map na/secret-length [a c])))
+        (is (= (hex (bytes-from (range 32))) (hex (reveal a))))
+        (is (= (hex (bytes-from (range 32 64))) (hex (reveal c))))
+        (is (= (hex bs) (hex (reveal s))) "the source is unchanged")
+        (run! na/secret-destroy! [a c]))
+      (let [parts (na/secret-split s [1 20 43])]
+        (is (= (hex bs) (apply str (map (comp hex reveal) parts))) "uneven parts, in order")
+        (run! na/secret-destroy! parts))
+      (na/with-secret [whole (first (na/secret-split s [64]))]
+        (is (= (hex bs) (hex (reveal whole))) "one part: a copy")))))
+
+(deftest secret-split-with-hkdf-matches-bytes
+  ;; The use it exists for: one 64-byte HKDF output as two 32-byte keys.
+  (let [ck (b 32 3) dh (b 32 4)
+        expected (na/hkdf-sha-256 dh ck nil 64)]
+    (na/with-secret [ck-s (secret-of (b 32 3))]
+      (na/with-secret [out (na/hkdf-sha-256 dh ck-s nil 64)]
+        (let [[k1 k2] (na/secret-split out [32 32])]
+          (is (= (hex expected) (str (hex (reveal k1)) (hex (reveal k2)))))
+          (run! na/secret-destroy! [k1 k2]))))))
+
+(deftest secret-split-refuses-bad-input
+  (na/with-secret [s (na/secret-random 32)]
+    (doseq [x (concat not-bytes [(b 32)])]
+      (is (= [:nacljc.core/bad-input 0] (rejected #(na/secret-split x [16 16]))) (pr-str x)))
+    (doseq [ls [nil [] "32" [16 :a] [16.5 15.5] #{32} {32 32}]]
+      (is (= :nacljc.core/bad-input (error-type #(na/secret-split s ls))) (pr-str ls)))
+    (doseq [ls [[16 15] [16 17] [32 0] [40 -8] [33]]]
+      (is (= :nacljc.core/bad-length (error-type #(na/secret-split s ls))) (pr-str ls)))
+    (let [log (atom [])]
+      (binding [na/*audit* log] (error-type #(na/secret-split s [16 17])))
+      (is (empty? (filter #(= :secret-alloc (first %)) @log)) "rejected before any secret is allocated")))
+  (let [s (na/secret-random 32)]
+    (na/secret-destroy! s)
+    (is (= :nacljc.core/destroyed-secret (error-type #(na/secret-split s [16 16]))))))
+
+(deftest secret-split-frees-its-parts-when-one-fails
+  ;; If allocating a later part fails, the parts already made are freed.
+  (na/with-secret [s (na/secret-random 32)]
+    (let [real  @#'na/new-secret!
+          calls (atom 0)
+          log   (atom [])]
+      (with-redefs [na/new-secret! (fn [n fill!]
+                                     (if (= 2 (swap! calls inc))
+                                       (throw (ex-info "injected" {:type ::injected}))
+                                       (real n fill!)))]
+        (binding [na/*audit* log]
+          (is (= ::injected (error-type #(na/secret-split s [8 8 16]))))))
+      (is (= 1 (count (filter #(= :secret-alloc (first %)) @log))) "the first part was made")
+      (is (= 1 (count (filter #(= :free (first %)) @log))) "and freed again"))))
 
 (deftest a-secret-in-use-cannot-be-destroyed
   (let [s (na/secret-random 32)]
