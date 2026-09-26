@@ -9,9 +9,8 @@ Public repo: https://github.com/franks42/nacljc.
 - Releases: a `vX.Y.Z` tag triggers `release.yml`. It runs
   `bb release-check` and the tests, deploys to Clojars, then runs
   `bb test:clojars X.Y.Z` against the jar fetched back from Clojars.
-- **main is 0.3.0-SNAPSHOT:** `secret-split` and a secret HKDF salt, for
-  signet 0.9.0's sessions on vault handles (signet docs/08, phase 1). Not
-  released yet; signet 0.8.0 uses 0.2.0.
+- **0.3.0 (released 2026-09-25):** `secret-split` and a secret HKDF salt,
+  for signet 0.9.0's sessions on vault handles (signet docs/08, phase 1).
 - **0.2.0 (released 2026-09-24):** secrets in guarded memory (`secret-*`,
   `with-secret`; no-access outside calls, a counter under a lock for
   threads), AEGIS-256, X-Wing (bound only if libsodium >= 1.0.22). Secret

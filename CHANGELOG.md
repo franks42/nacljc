@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-09-25)
 
 For signet 0.9.0's sessions, whose chaining key and transport keys stay in
 guarded memory.

@@ -36,7 +36,7 @@ never had, such as HKDF-SHA-256 and IETF ChaCha20-Poly1305. The repo was
 called `sodium.cljc` until 2026-09-23. It was renamed because Clojars'
 `com.degel/sodium` already ships a `sodium.core` namespace.
 
-Status: **0.2.0 released** on Clojars (2026-09-24; see [CHANGELOG.md](CHANGELOG.md)). signet uses it as its libsodium backend.
+Status: **0.3.0 released** on Clojars (2026-09-25; see [CHANGELOG.md](CHANGELOG.md)). signet uses it as its libsodium backend.
 [`docs/feasibility.md`](docs/feasibility.md) has the research findings and
 the evidence.
 
@@ -48,16 +48,16 @@ libsodium`; on Linux see "Requirements", since Debian and Ubuntu ship
 
 ```clojure
 ;; deps.edn (JVM, JDK 25+)
-{:deps    {com.github.franks42/nacljc {:mvn/version "0.2.0"}}
+{:deps    {com.github.franks42/nacljc {:mvn/version "0.3.0"}}
  :aliases {:run {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
 
 ;; bb.edn (babashka 1.13.220+; bb ignores the org.babashka/ffi
 ;; dependency and uses its built-in babashka.ffi)
-{:deps {com.github.franks42/nacljc {:mvn/version "0.2.0"}}}
+{:deps {com.github.franks42/nacljc {:mvn/version "0.3.0"}}}
 
 ;; nbb.edn (nbb 1.6.213+ on Node 26+; nbb resolves :deps through bb,
 ;; so bb must be installed)
-{:deps {com.github.franks42/nacljc {:mvn/version "0.2.0"}}}
+{:deps {com.github.franks42/nacljc {:mvn/version "0.3.0"}}}
 ```
 
 ```clojure
