@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.3.1 (2026-09-25)
+
+### Changed
+
+- **The stack is wiped after every operation that reads a secret**, on
+  success and on error: `sodium_stackzero` over 16 KiB below the caller,
+  as recommended in libsodium's "Securing memory allocations" docs. C code
+  copies secret values into registers and stack frames while it runs.
+  About 0.2 µs per operation; operations on byte arrays skip it. No API
+  change.
 
 ## 0.3.0 (2026-09-25)
 

@@ -611,6 +611,38 @@
       (is (= 1 (count (filter #(= :secret-alloc (first %)) @log))) "the first part was made")
       (is (= 1 (count (filter #(= :free (first %)) @log))) "and freed again"))))
 
+;; ---- 0.3.1: the stack is wiped after operations that read a secret ----
+
+(defn- stackzeroes
+  "How many stack wipes f triggered (whether or not it threw)."
+  [f]
+  (count (filter #(= :stackzero (first %)) (second (audited f)))))
+
+(deftest stack-is-wiped-after-reading-a-secret
+  (let [seed (na/secret-random 32)
+        k    (na/secret-random 32)
+        pk   (na/x25519-public-key (b 32 5))
+        ct   (na/chacha20-poly1305-encrypt (b 32) (b 12) (utf8 "m") nil)]
+    (testing "every operation that opens a secret wipes the stack once"
+      (doseq [[label f] {"ed25519-sign"        #(na/ed25519-sign seed (utf8 "m"))
+                         "ed25519-public-key"  #(na/ed25519-public-key seed)
+                         "x25519"              #(na/secret-destroy! (na/x25519 k pk))
+                         "hkdf, secret ikm"    #(na/secret-destroy! (na/hkdf-sha-256 k nil nil 32))
+                         "hkdf, secret salt"   #(na/secret-destroy! (na/hkdf-sha-256 (b 0) k nil 32))
+                         "encrypt"             #(na/chacha20-poly1305-encrypt k (b 12) (utf8 "m") nil)
+                         "hmac"                #(na/hmac-sha-256 k (utf8 "m"))
+                         "aegis256"            #(na/aegis256-encrypt k (b 32) (utf8 "m") nil)
+                         "secret-split"        #(run! na/secret-destroy! (na/secret-split k [16 16]))
+                         "secret-export"       #(reveal k)}]
+        (is (= 1 (stackzeroes f)) label)))
+    (testing "also when the operation fails"
+      (is (= 1 (stackzeroes #(na/chacha20-poly1305-decrypt k (b 12) ct nil))) "auth failure")
+      (is (= 1 (stackzeroes #(na/x25519 k (b 32 0)))) "low-order point"))
+    (testing "operations on byte arrays only don't pay for it"
+      (is (zero? (stackzeroes #(na/ed25519-sign (b 32 7) (utf8 "m")))))
+      (is (zero? (stackzeroes #(na/hkdf-sha-256 (b 32) nil nil 32)))))
+    (run! na/secret-destroy! [seed k])))
+
 (deftest a-secret-in-use-cannot-be-destroyed
   (let [s (na/secret-random 32)]
     (#'na/open-secret! s)

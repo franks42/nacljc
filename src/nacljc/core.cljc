@@ -96,6 +96,8 @@
 (ffi/defcfn ^:private -sodium-init {:library lib} "sodium_init" [] :int)
 (ffi/defcfn ^:private -version-string {:library lib} "sodium_version_string" [] :string)
 (ffi/defcfn ^:private -memzero {:library lib} "sodium_memzero" [:pointer :size_t] :void)
+;; 0.3.1: wipe the stack below the caller (libsodium >= 1.0.16)
+(ffi/defcfn ^:private -stackzero {:library lib} "sodium_stackzero" [:size_t] :void)
 (ffi/defcfn ^:private -memcmp {:library lib} "sodium_memcmp" [:pointer :pointer :size_t] :int)
 ;; 0.3.0: a += b (little-endian, constant time). Onto zeroed memory it
 ;; copies b; libsodium has no memcpy (see secret-split).
@@ -403,12 +405,30 @@
                    (throw e))))
           [] (filter secret? xs)))
 
+(def ^:private stackzero-bytes
+  "How much stack sodium_stackzero clears after an operation that read a
+   secret. C code copies secret values into registers and stack frames
+   while it runs, even when the secret itself lives in guarded memory
+   (libsodium-doc, \"Notes on memory locking\"). The call clears this many
+   bytes below its own frame, which covers the frames the operation just
+   used: libsodium's functions need a few KiB, Argon2 works on the heap."
+  16384)
+
+(defn- stackzero!
+  "Clear stackzero-bytes of stack below the caller (sodium_stackzero)."
+  []
+  (-stackzero stackzero-bytes)
+  (audit! [:stackzero stackzero-bytes]))
+
 (defmacro ^:private with-open-secrets
   "Evaluate body with every secret among xs readable; close them after,
-   also when body throws."
+   also when body throws. When a secret was opened, then clear the stack
+   the operation used (stackzero!), on success and on error."
   [xs & body]
   `(let [opened# (open-secrets! ~xs)]
-     (try ~@body (finally (run! close-secret! opened#)))))
+     (try ~@body
+          (finally (run! close-secret! opened#)
+                   (when (seq opened#) (stackzero!))))))
 
 (defn- new-secret!
   "A new secret of n bytes. fill! writes them through the pointer it is

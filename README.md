@@ -36,7 +36,7 @@ never had, such as HKDF-SHA-256 and IETF ChaCha20-Poly1305. The repo was
 called `sodium.cljc` until 2026-09-23. It was renamed because Clojars'
 `com.degel/sodium` already ships a `sodium.core` namespace.
 
-Status: **0.3.0 released** on Clojars (2026-09-25; see [CHANGELOG.md](CHANGELOG.md)). signet uses it as its libsodium backend.
+Status: **0.3.1 released** on Clojars (2026-09-25; see [CHANGELOG.md](CHANGELOG.md)). signet uses it as its libsodium backend.
 [`docs/feasibility.md`](docs/feasibility.md) has the research findings and
 the evidence.
 
@@ -48,16 +48,16 @@ libsodium`; on Linux see "Requirements", since Debian and Ubuntu ship
 
 ```clojure
 ;; deps.edn (JVM, JDK 25+)
-{:deps    {com.github.franks42/nacljc {:mvn/version "0.3.0"}}
+{:deps    {com.github.franks42/nacljc {:mvn/version "0.3.1"}}
  :aliases {:run {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
 
 ;; bb.edn (babashka 1.13.220+; bb ignores the org.babashka/ffi
 ;; dependency and uses its built-in babashka.ffi)
-{:deps {com.github.franks42/nacljc {:mvn/version "0.3.0"}}}
+{:deps {com.github.franks42/nacljc {:mvn/version "0.3.1"}}}
 
 ;; nbb.edn (nbb 1.6.213+ on Node 26+; nbb resolves :deps through bb,
 ;; so bb must be installed)
-{:deps {com.github.franks42/nacljc {:mvn/version "0.3.0"}}}
+{:deps {com.github.franks42/nacljc {:mvn/version "0.3.1"}}}
 ```
 
 ```clojure
@@ -195,6 +195,17 @@ What stays with the caller:
   `InternalError` on macOS and aborts on Linux), while the same read inside a call works. Removing the
   counter as an experiment crashed the JVM with SIGBUS when threads shared
   a secret.
+- **The stack is wiped after secret operations** (0.3.1). While C code
+  works on a secret it copies values into registers and stack frames,
+  even though the secret itself stays in guarded memory. After every
+  operation that reads a secret (on success and on error), nacljc calls
+  `sodium_stackzero` over 16 KiB below the caller, as libsodium's docs
+  recommend. It costs about 0.2 µs per operation (an Ed25519 signature
+  takes about 25 µs). Operations on plain byte arrays skip it. This is
+  best effort: registers saved by the OS during a context switch are out
+  of reach. libsodium's docs also recommend disabling core dumps
+  (`ulimit -c 0`), encrypted or no swap, and no hibernation on machines
+  that handle secrets.
 - **Clojure-side arrays are yours.** Arrays you pass in and get back live
   on the Clojure heap. Prefer secrets for long-lived keys. They are not locked in memory, and the JVM's moving
   garbage collector may already have copied them. Call `memzero!` on
