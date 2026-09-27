@@ -65,6 +65,11 @@
           (check (str "RFC 10032 AEGIS-256 TV" tv)
                  (= (str ct tag) (hex (.crypto_aead_aegis256_encrypt s (unhex msg) (unhex ad) nil (unhex nonce) (unhex key))))))
         (check "AEGIS-256 exported by this libsodium.js" false)))
+    (doseq [[i {:keys [password salt outlen opslimit memlimit out]}]
+            (map-indexed vector (get-in vectors [:argon2id :vectors]))]
+      (check (str "libsodium Argon2id tv" i)
+             (= out (hex (.crypto_pwhash s outlen (unhex password) (unhex salt) opslimit memlimit
+                                         (.-crypto_pwhash_ALG_ARGON2ID13 s))))))
     (check "randombytes_buf distinct" (= 1000 (count (set (repeatedly 1000 #(hex (.randombytes_buf s 16)))))))
     (println (str "\n" @fails " failed"))
     (js/process.exit (if (pos? @fails) 1 0))))

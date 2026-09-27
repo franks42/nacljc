@@ -138,6 +138,17 @@
   [:pointer :pointer :size_t :pointer :size_t] :int)
 (ffi/defcfn ^:private -hkdf-expand {:library lib} "crypto_kdf_hkdf_sha256_expand"
   [:pointer :size_t :pointer :size_t :pointer] :int)
+;; 0.4.0: Argon2id (crypto_pwhash, algorithm ARGON2ID13 = 2)
+(ffi/defcfn ^:private -pwhash-argon2id {:library lib} "crypto_pwhash_argon2id"
+  [:pointer :ulong :pointer :ulong :pointer :ulong :size_t :int] :int)
+(ffi/defcfn ^:private -argon2id-opslimit-interactive {:library lib} "crypto_pwhash_argon2id_opslimit_interactive" [] :ulong)
+(ffi/defcfn ^:private -argon2id-memlimit-interactive {:library lib} "crypto_pwhash_argon2id_memlimit_interactive" [] :size_t)
+(ffi/defcfn ^:private -argon2id-opslimit-moderate {:library lib} "crypto_pwhash_argon2id_opslimit_moderate" [] :ulong)
+(ffi/defcfn ^:private -argon2id-memlimit-moderate {:library lib} "crypto_pwhash_argon2id_memlimit_moderate" [] :size_t)
+(ffi/defcfn ^:private -argon2id-opslimit-sensitive {:library lib} "crypto_pwhash_argon2id_opslimit_sensitive" [] :ulong)
+(ffi/defcfn ^:private -argon2id-memlimit-sensitive {:library lib} "crypto_pwhash_argon2id_memlimit_sensitive" [] :size_t)
+(ffi/defcfn ^:private -argon2id-opslimit-max {:library lib} "crypto_pwhash_argon2id_opslimit_max" [] :ulong)
+(ffi/defcfn ^:private -argon2id-memlimit-max {:library lib} "crypto_pwhash_argon2id_memlimit_max" [] :size_t)
 ;; 0.2.0: guarded memory (sodium_malloc: guard pages, canaries, mlock)
 (ffi/defcfn ^:private -secure-malloc {:library lib} "sodium_malloc" [:size_t] :pointer)
 (ffi/defcfn ^:private -secure-free {:library lib} "sodium_free" [:pointer] :void)
@@ -823,6 +834,68 @@
           (output! s (or (secret? ikm) (secret? salt)) len
                    #(check-rc (-hkdf-expand % len (in! s info) (alength info) prk)
                               "crypto_kdf_hkdf_sha256_expand")))))))
+
+;; ---------------------------------------------------------------------------
+;; Argon2id (0.4.0): password hashing, crypto_pwhash
+;; ---------------------------------------------------------------------------
+
+(def ^:private argon2id-alg
+  "crypto_pwhash_argon2id_ALG_ARGON2ID13: Argon2id, version 1.3."
+  2)
+
+(defn argon2id-limits
+  "libsodium's Argon2id cost presets, as {:opslimit n :memlimit bytes}:
+     :interactive  2 passes,  64 MiB   (online logins)
+     :moderate     3 passes, 256 MiB   (a local vault; about a second)
+     :sensitive    4 passes,   1 GiB   (rarely unlocked, high-value keys)
+   The numbers come from libsodium, not from this code. Store the limits
+   you used next to the salt: they are needed again to derive the same key.
+   Pure.
+   Throws ex-info {:type ::bad-input} for another preset."
+  [preset]
+  (case preset
+    :interactive {:opslimit (-argon2id-opslimit-interactive) :memlimit (-argon2id-memlimit-interactive)}
+    :moderate    {:opslimit (-argon2id-opslimit-moderate)    :memlimit (-argon2id-memlimit-moderate)}
+    :sensitive   {:opslimit (-argon2id-opslimit-sensitive)   :memlimit (-argon2id-memlimit-sensitive)}
+    (throw-bad-input "argon2id-limits preset" ":interactive, :moderate or :sensitive" preset)))
+
+(defn argon2id
+  "Argon2id (v1.3, libsodium's crypto_pwhash default): len bytes (16 or
+   more) derived from password and a 16-byte random salt, at the cost in
+   limits, {:opslimit passes :memlimit bytes} (see argon2id-limits).
+   Memory-hard and deliberately slow: it resists offline guessing of a
+   stolen salt and key. The same password, salt and limits always give the
+   same bytes.
+
+   password is a byte array (UTF-8 of the typed text, say; wipe it with
+   memzero! afterwards) or a secret. A secret password gives a secret
+   result, written straight into guarded memory: the key never touches the
+   Clojure heap. Argon2's working memory (memlimit bytes) is mapped for the
+   call and unmapped afterwards, outside guarded memory.
+
+   Pure for a byte-array password; with a secret, impure: reads it, and
+   allocates guarded memory for the secret result (see secret-destroy!).
+   Throws ex-info {:type ::bad-input} for an input of the wrong type or
+   limits that are not a map with :opslimit and :memlimit;
+   {:type ::bad-length} for a salt that is not 16 bytes, len below 16, or
+   limits out of range (opslimit >= 1, memlimit >= 8192 and within
+   libsodium's maximum); {:type ::destroyed-secret} for a destroyed
+   password; and {:type ::call-failed} if libsodium fails (e.g. out of
+   memory)."
+  [password salt len limits]
+  (let [password (check-key password "Argon2id password")
+        salt     (check-bytes salt 16 "Argon2id salt")
+        len      (check-count len 16 max-count "Argon2id output length")
+        _        (when-not (and (map? limits) (contains? limits :opslimit) (contains? limits :memlimit))
+                   (throw-bad-input "Argon2id limits" "a map with :opslimit and :memlimit" limits))
+        ops      (check-count (:opslimit limits) 1 (-argon2id-opslimit-max) "Argon2id :opslimit")
+        mem      (check-count (:memlimit limits) 8192 (-argon2id-memlimit-max) "Argon2id :memlimit")]
+    (with-open-secrets [password]
+      (with-scratch [s]
+        (output! s (secret? password) len
+                 #(check-rc (-pwhash-argon2id % len (key-in! s password) (key-length password)
+                                              (in! s salt) ops mem argon2id-alg)
+                            "crypto_pwhash_argon2id"))))))
 
 (defn sha-256
   "SHA-256 digest (32 bytes) of data.

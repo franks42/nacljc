@@ -8,6 +8,16 @@
   be a secret (or both): it is read inside its guarded memory, so two
   secrets are compared without exporting either, and the stack is wiped
   afterwards. Byte arrays behave as before.
+- **Argon2id: `argon2id` and `argon2id-limits`** (libsodium's
+  `crypto_pwhash`, Argon2id v1.3). `(argon2id password salt len limits)`
+  derives len bytes from a password and a 16-byte salt at the cost in
+  `{:opslimit n :memlimit bytes}`; `argon2id-limits` returns libsodium's
+  `:interactive`, `:moderate` and `:sensitive` presets. A secret password
+  gives a secret key, straight into guarded memory (the base for signet's
+  password unlocking). Checked against libsodium's own test vectors,
+  natively and in libsodium.js (WASM on Node, headless Chrome). Argon2's
+  working memory (memlimit bytes) is mapped for the call and unmapped
+  afterwards, outside guarded memory.
 - **`nacljc.process`: opt-in process hardening.** `harden-process!` with
   `{:core-dumps false :dumpable false :heap-dump-on-oom false}` (any
   subset) disables core dumps (`setrlimit`), makes the process

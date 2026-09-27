@@ -12,10 +12,10 @@ Public repo: https://github.com/franks42/nacljc.
 - **main is 0.4.0-SNAPSHOT.**
 - **0.3.2 (released 2026-09-26):** review fixes (X-Wing 64 KiB stack wipe,
   exception-preserving cleanup, purity/throws docstrings everywhere,
-  `test:signet` on signet's own suite). 0.4.0 in progress on main: `constant-time-equal?` over secrets
-  (done) and `nacljc.process` (opt-in hardening, done; its own namespace so
-  `nacljc.core` stays libsodium-only). Possibly `crypto_pwhash` (for
-  signet's password unlocking).
+  `test:signet` on signet's own suite). 0.4.0 (2026-09-27): `constant-time-equal?` over secrets,
+  `nacljc.process` (opt-in hardening; its own namespace so `nacljc.core`
+  stays libsodium-only), and Argon2id (`argon2id`, `argon2id-limits`;
+  secret password in, secret key out) for signet's password unlocking.
 - **Decisions (2026-09-27):**
   - **Old libsodium (Ubuntu/Debian 1.0.18): back burner.** No CI job for
     it for now; distributions will catch up. The load-time version check

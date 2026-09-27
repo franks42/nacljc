@@ -88,7 +88,9 @@
      secret? secret-random secret-import! secret-export secret-destroy!
      secret-length secret-destroyed? with-secret
      ;; 0.3.0
-     secret-split})
+     secret-split
+     ;; 0.4.0
+     argon2id argon2id-limits})
 
 (deftest public-api-is-exactly-the-documented-one
   (is (= api (set (keys (ns-publics 'nacljc.core))))
@@ -719,6 +721,47 @@
   (let [s (na/secret-random 32)]
     (na/secret-destroy! s)
     (is (= :nacljc.core/destroyed-secret (error-type #(na/constant-time-equal? s (b 32 1)))))))
+
+;; ---- 0.4.0: Argon2id (crypto_pwhash) ----
+
+(deftest argon2id-known-answers
+  (doseq [{:keys [password salt outlen opslimit memlimit out]} (get-in vectors [:argon2id :vectors])]
+    (is (= out (hex (na/argon2id (unhex password) (unhex salt) outlen
+                                 {:opslimit opslimit :memlimit memlimit}))))))
+
+(deftest argon2id-secret-password-gives-a-secret
+  (let [{:keys [password salt outlen opslimit memlimit out]} (first (get-in vectors [:argon2id :vectors]))
+        limits {:opslimit opslimit :memlimit memlimit}]
+    (na/with-secret [pw (secret-of password)]
+      (let [[r events] (audited #(na/secret-destroy! (na/argon2id pw (unhex salt) outlen limits)))]
+        (is (= :no-throw r))
+        (is (= 1 (count (filter #(= :stackzero (first %)) events))) "the stack is wiped after"))
+      (na/with-secret [k (na/argon2id pw (unhex salt) outlen limits)]
+        (is (na/secret? k) "a secret password gives a secret key")
+        (is (= out (hex (reveal k))))))))
+
+(deftest argon2id-limits-come-from-libsodium
+  (is (= {:opslimit 2 :memlimit 67108864} (na/argon2id-limits :interactive)))
+  (is (= {:opslimit 3 :memlimit 268435456} (na/argon2id-limits :moderate)))
+  (is (= {:opslimit 4 :memlimit 1073741824} (na/argon2id-limits :sensitive)))
+  (is (= :nacljc.core/bad-input (error-type #(na/argon2id-limits :fast)))))
+
+(deftest argon2id-refuses-bad-input-before-allocating
+  (let [pw (utf8 "pw") salt (b 16) ok {:opslimit 1 :memlimit 8192}]
+    (doseq [[label f expected]
+            [["password not bytes"   #(na/argon2id "pw" salt 32 ok)                       :nacljc.core/bad-input]
+             ["salt not 16 bytes"    #(na/argon2id pw (b 15) 32 ok)                        :nacljc.core/bad-length]
+             ["output below 16"      #(na/argon2id pw salt (get-in vectors [:argon2id :too-short :outlen]) ok) :nacljc.core/bad-length]
+             ["opslimit below 1"     #(na/argon2id pw salt 32 {:opslimit 0 :memlimit 8192}) :nacljc.core/bad-length]
+             ["memlimit below 8 KiB" #(na/argon2id pw salt 32 {:opslimit 1 :memlimit 8191}) :nacljc.core/bad-length]
+             ["limits missing"       #(na/argon2id pw salt 32 {:opslimit 1})                :nacljc.core/bad-input]
+             ["limits not a map"     #(na/argon2id pw salt 32 :moderate)                    :nacljc.core/bad-input]]]
+      (is (= [expected 0] (rejected f)) label))))
+
+(deftest argon2id-wipes-its-buffers
+  (let [[r events] (audited #(na/argon2id (utf8 "correct horse") (b 16 1) 32 {:opslimit 1 :memlimit 8192}))]
+    (is (= :no-throw r))
+    (is (hygienic? events) (pr-str events))))
 
 (deftest a-secret-in-use-cannot-be-destroyed
   (let [s (na/secret-random 32)]

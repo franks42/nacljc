@@ -86,6 +86,8 @@ and bb. On nbb, `Int8Array` or `Uint8Array` in, and `Int8Array` out.
 | `(hkdf-sha-256 ikm salt info len)` | salt and info may be nil (empty); ikm and salt may be secrets (0.3.0: salt); len 1..8160 | `len` bytes (RFC 5869); a secret if ikm or salt is one |
 | `(hmac-sha-256 k data)` | key of any length | 32 |
 | `(sha-256 data)` | | 32 |
+| `(argon2id password salt len limits)` | password (bytes or a secret), salt 16, len ≥ 16, `{:opslimit n :memlimit bytes}` | `len` bytes (Argon2id v1.3, libsodium's `crypto_pwhash`); a secret if the password is one (0.4.0) |
+| `(argon2id-limits preset)` | `:interactive`, `:moderate` or `:sensitive` | `{:opslimit n :memlimit bytes}` from libsodium (0.4.0) |
 | `(random-bytes n)` | n ≥ 0 | n bytes from libsodium's CSPRNG |
 | `(memzero! bs)` | byte array | nil; overwrites `bs` with zeros |
 | `(constant-time-equal? a b)` | two byte arrays or secrets (0.4.0: secrets compared in place) | boolean; constant-time for equal lengths |
