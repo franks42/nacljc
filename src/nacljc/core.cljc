@@ -611,20 +611,25 @@
     nil))
 
 (defn constant-time-equal?
-  "Do byte arrays a and b hold the same bytes? For equal lengths the time
-   taken does not depend on the contents (sodium_memcmp). Different lengths
-   return false at once: lengths are not treated as secret.
-   Pure.
-   Throws ex-info {:type ::bad-input} unless both are byte arrays."
+  "Do a and b hold the same bytes? Each is a byte array or a secret (0.4.0):
+   a secret is compared in place, inside its guarded memory, so two
+   secrets can be compared without exporting either. For equal lengths the
+   time taken does not depend on the contents (sodium_memcmp). Different
+   lengths return false at once: lengths are not treated as secret.
+   Pure for byte arrays; with a secret, impure: reads it.
+   Throws ex-info {:type ::bad-input} unless each is a byte array or a
+   secret, and {:type ::destroyed-secret} for a destroyed secret."
   [a b]
-  (let [a (check-bytes a "constant-time-equal? a")
-        b (check-bytes b "constant-time-equal? b")
-        n (alength a)]
-    (cond
-      (not= n (alength b)) false
-      (zero? n)            true
-      :else                (with-scratch [s]
-                             (zero? (-memcmp (in! s a) (in! s b) n))))))
+  (let [a (check-key a "constant-time-equal? a")
+        b (check-key b "constant-time-equal? b")
+        n (key-length a)]
+    ;; secrets are opened first, so a destroyed one always throws
+    (with-open-secrets [a b]
+      (cond
+        (not= n (key-length b)) false
+        (zero? n)               true
+        :else                   (with-scratch [s]
+                                  (zero? (-memcmp (key-in! s a) (key-in! s b) n)))))))
 
 (defn ed25519-public-key
   "Ed25519 public key (32 bytes) for a 32-byte seed (a byte array or a

@@ -12,9 +12,10 @@ Public repo: https://github.com/franks42/nacljc.
 - **main is 0.4.0-SNAPSHOT.**
 - **0.3.2 (released 2026-09-26):** review fixes (X-Wing 64 KiB stack wipe,
   exception-preserving cleanup, purity/throws docstrings everywhere,
-  `test:signet` on signet's own suite). Planned for 0.4.0: `constant-time-equal?` over secrets
-  (`sodium_memcmp` on two open windows); possibly `crypto_pwhash` (for
-  signet's password unlocking) and the opt-in hardening helper (below).
+  `test:signet` on signet's own suite). 0.4.0 in progress on main: `constant-time-equal?` over secrets
+  (done) and `nacljc.process` (opt-in hardening, done; its own namespace so
+  `nacljc.core` stays libsodium-only). Possibly `crypto_pwhash` (for
+  signet's password unlocking).
 - **Decisions (2026-09-27):**
   - **Old libsodium (Ubuntu/Debian 1.0.18): back burner.** No CI job for
     it for now; distributions will catch up. The load-time version check
@@ -25,8 +26,8 @@ Public repo: https://github.com/franks42/nacljc.
     with options such as `{:core-dumps false :dumpable false}`) does it
     only when a deployment calls it; the README documents each option
     with its trade-off (core dumps and `PR_SET_DUMPABLE` help security but
-    hurt debugging and profiling). It is a deployment choice. Whether the
-    helper lives in nacljc or signet is still open.
+    hurt debugging and profiling). It is a deployment choice. It lives in
+    nacljc as the separate namespace `nacljc.process` (decided 2026-09-27).
 - **Docstrings:** every function, public and private, states its purity in
   its first paragraph: `Pure.`, or `Impure: <what it reads or writes>`, or
   for key-taking functions "Pure for byte-array keys; with a secret,

@@ -696,6 +696,30 @@
     (is (= 1 (count (filter #(= :stackzero (first %)) @log))) "the stack was still wiped")
     (run! na/secret-destroy! [a c])))
 
+;; ---- 0.4.0: constant-time comparison of secrets ----
+
+(deftest constant-time-equal?-compares-secrets-in-place
+  (let [x (secret-of (b 32 7))
+        y (secret-of (b 32 7))
+        z (secret-of (b 32 8))]
+    (is (true? (na/constant-time-equal? x y)) "two secrets")
+    (is (false? (na/constant-time-equal? x z)))
+    (is (true? (na/constant-time-equal? x (b 32 7))) "a secret and a byte array")
+    (is (true? (na/constant-time-equal? (b 32 7) x)) "either order")
+    (is (false? (na/constant-time-equal? x (b 31 7))) "different lengths: false")
+    (let [[r events] (audited #(na/constant-time-equal? x y))]
+      (is (= :no-throw r))
+      (is (empty? (filter #(= :alloc (first %)) events))
+          "two secrets are read in place: no scratch copy at all")
+      (is (= 1 (count (filter #(= :stackzero (first %)) events))) "and the stack is wiped"))
+    (let [[_ events] (audited #(na/constant-time-equal? x (b 32 7)))]
+      (is (= [32] (map #(nth % 2) (filter #(= :alloc (first %)) events)))
+          "with a byte array, only the byte array is copied into scratch memory"))
+    (run! na/secret-destroy! [x y z]))
+  (let [s (na/secret-random 32)]
+    (na/secret-destroy! s)
+    (is (= :nacljc.core/destroyed-secret (error-type #(na/constant-time-equal? s (b 32 1)))))))
+
 (deftest a-secret-in-use-cannot-be-destroyed
   (let [s (na/secret-random 32)]
     (#'na/open-secret! s)

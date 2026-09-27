@@ -2,6 +2,22 @@
 
 ## 0.4.0 (unreleased)
 
+### Added
+
+- **`constant-time-equal?` compares secrets in place.** Either argument may
+  be a secret (or both): it is read inside its guarded memory, so two
+  secrets are compared without exporting either, and the stack is wiped
+  afterwards. Byte arrays behave as before.
+- **`nacljc.process`: opt-in process hardening.** `harden-process!` with
+  `{:core-dumps false :dumpable false :heap-dump-on-oom false}` (any
+  subset) disables core dumps (`setrlimit`), makes the process
+  non-dumpable (`prctl`, Linux) and switches off heap dumps on
+  OutOfMemoryError (HotSpot); `process-status` reports the settings.
+  **Nothing happens by default**: it is a deployment choice (README,
+  "Deployment hardening"). A separate namespace: `nacljc.core` still binds
+  libsodium only. Tested in child processes on bb, the JVM and nbb
+  (`bb test:process`, in CI on macOS and Linux).
+
 ## 0.3.2 (2026-09-26)
 
 From the review `docs/review-2026-09-26.md`. No API change.

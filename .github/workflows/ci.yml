@@ -91,6 +91,8 @@ jobs:
         run: bb test:loading
       - name: Secret memory faults outside calls (bb, nbb, JVM)
         run: bb test:secrets
+      - name: Opt-in process hardening in child processes (bb, nbb, JVM)
+        run: bb test:process
 
       - name: libsodium.js (WASM) on Node
         run: |
@@ -167,6 +169,8 @@ jobs:
         run: bb test:loading
       - name: Secret memory faults outside calls (bb, nbb, JVM)
         run: bb test:secrets
+      - name: Opt-in process hardening in child processes (bb, nbb, JVM)
+        run: bb test:process
       - name: Suite against the installed jar (JVM, bb, nbb)
         run: bb test:jar
 

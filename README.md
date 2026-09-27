@@ -88,7 +88,7 @@ and bb. On nbb, `Int8Array` or `Uint8Array` in, and `Int8Array` out.
 | `(sha-256 data)` | | 32 |
 | `(random-bytes n)` | n ≥ 0 | n bytes from libsodium's CSPRNG |
 | `(memzero! bs)` | byte array | nil; overwrites `bs` with zeros |
-| `(constant-time-equal? a b)` | two byte arrays | boolean; constant-time for equal lengths |
+| `(constant-time-equal? a b)` | two byte arrays or secrets (0.4.0: secrets compared in place) | boolean; constant-time for equal lengths |
 | `(libsodium-version)`, `minimum-libsodium-version` | | `"1.0.22"`, `[1 0 19]` |
 | `(aegis256-encrypt k nonce pt aad)` | key 32, **nonce 32**, plaintext, aad (nil = none) | ciphertext ‖ **32-byte** tag (AEGIS-256, RFC 10032) |
 | `(aegis256-decrypt k nonce ct aad)` | key 32, nonce 32, ciphertext ≥ 32, aad | plaintext |
@@ -225,6 +225,41 @@ What stays with the caller:
   secret that is dropped without `secret-destroy!` (or `with-secret`)
   stays allocated and locked until the process exits.
 
+## Deployment hardening (opt-in)
+
+nacljc keeps secrets out of the Clojure heap, but a crashing or inspected
+process can still leak what is in memory. Hardening that is a **deployment
+choice**, because each measure also takes a debugging tool away. So
+nothing happens by default: loading nacljc changes no process setting.
+`nacljc.process` (0.4.0) does it when you ask:
+
+```clojure
+(require '[nacljc.process :as p])
+(p/process-status)
+;; => {:os :linux :core-dumps {:soft 0 :hard :unlimited} :dumpable true :heap-dump-on-oom false}
+(p/harden-process! {:core-dumps false :dumpable false :heap-dump-on-oom false})
+;; => {:core-dumps :disabled :dumpable :disabled :heap-dump-on-oom :disabled}
+```
+
+| Option | What it does | Where | What it costs |
+|---|---|---|---|
+| `:core-dumps false` | `setrlimit(RLIMIT_CORE, 0, 0)`: no core dump; the hard limit 0 cannot be raised again in this process | macOS, Linux | no core file to debug a crash |
+| `:dumpable false` | `prctl(PR_SET_DUMPABLE, 0)`: no core dump, and other processes of the same user can no longer attach a debugger (`ptrace`) or read `/proc/<pid>/mem` | Linux | no debugger, profiler or `/proc` inspection by the same user |
+| `:heap-dump-on-oom false` | switches off `-XX:+HeapDumpOnOutOfMemoryError`, which writes the whole heap to disk | HotSpot JVM | no heap dump to diagnose an out-of-memory error |
+
+Each option reports `:disabled`, `:unsupported` (not on this OS or
+runtime) or `:failed`. Only disabling is offered; an unknown option or a
+value other than `false` throws before anything changes.
+
+Not settable from a running process, so set them yourself if you want
+them:
+
+- **JVM flags:** `-XX:+DisableAttachMechanism` (no `jcmd`/agent attach by
+  the same user, which would bypass `:dumpable`), `-XX:ErrorFile=<path>`
+  (the crash log `hs_err_pid*.log` contains registers and stack words).
+- **The machine:** encrypted swap or none, and no hibernation (it writes
+  all of memory to disk, guarded pages included).
+
 ## Loading libsodium
 
 libsodium loads when `nacljc.core` loads. Without configuration it is
@@ -309,9 +344,13 @@ Scittle and libsodium.js.
 
 ```
 src/nacljc/core.cljc          the binding (API above): checks, scratch arenas, wiping
+src/nacljc/process.cljc       opt-in process hardening (libc: setrlimit, prctl)
 test/nacljc/vectors.edn       RFC vectors + cross-platform vectors
 test/nacljc/core_test.cljc    known answers, typed errors, hygiene audit (JVM, bb, nbb)
+test/nacljc/process_test.cljc nacljc.process checks that change nothing
 test/loading/run.clj          library-loading checks, driving test/loading/child.cljc
+test/secrets/run.clj          secret memory faults, driving test/secrets/child.cljc
+test/process/run.clj          hardening applied, driving test/process/child.cljc
 test/nacljc/jca_crosscheck.clj  libsodium vs signet's JCA on random inputs
 test/wasm/check.cljs          libsodium.js on Node against the same vectors
 test/browser/index.html       Scittle page doing the same in a browser

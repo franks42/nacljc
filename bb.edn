@@ -3,26 +3,29 @@
  {:requires ([clojure.string :as str])
 
   test:bb   {:doc  "Run the vector tests on babashka"
-             :task (do (require 'clojure.test 'nacljc.core-test)
-                       (let [r (clojure.test/run-tests 'nacljc.core-test)]
+             :task (do (require 'clojure.test 'nacljc.core-test 'nacljc.process-test)
+                       (let [r (clojure.test/run-tests 'nacljc.core-test 'nacljc.process-test)]
                          ;; exit only on failure: exiting 0 would end test:all here
                          (when (pos? (+ (:fail r) (:error r))) (System/exit 1))))}
 
   test:jvm  {:doc  "Run the vector tests on JVM Clojure (JDK 25+)"
              :task (shell "clojure" "-M:test" "-e"
-                          (str "(require 'clojure.test 'nacljc.core-test)"
-                               "(let [r (clojure.test/run-tests 'nacljc.core-test)]"
+                          (str "(require 'clojure.test 'nacljc.core-test 'nacljc.process-test)"
+                               "(let [r (clojure.test/run-tests 'nacljc.core-test 'nacljc.process-test)]"
                                "  (System/exit (if (pos? (+ (:fail r) (:error r))) 1 0)))"))}
 
   test:nbb  {:doc  "Run the vector tests on nbb (Node 26+ node:ffi)"
              :task (shell "nbb" "-cp" "src:test" "-e"
-                          "(require 'cljs.test 'nacljc.core-test) (cljs.test/run-tests 'nacljc.core-test)")}
+                          "(require 'cljs.test 'nacljc.core-test 'nacljc.process-test) (cljs.test/run-tests 'nacljc.core-test 'nacljc.process-test)")}
 
   test:loading {:doc  "Library loading in fresh processes on bb, nbb and the JVM: defaults, NACLJC_LIBSODIUM, -Dnacljc.libsodium, missing and wrong libraries"
                 :task (shell "bb" "-cp" "test" "-m" "loading.run")}
 
   test:secrets {:doc  "Secret memory faults when read outside an access window or after destroy (child processes on bb, the JVM and nbb)"
                 :task (shell "bb" "-cp" "test" "-m" "secrets.run")}
+
+  test:process {:doc  "Opt-in process hardening (nacljc.process) in fresh child processes on bb, the JVM and nbb"
+                :task (shell "bb" "-cp" "test" "-m" "process.run")}
 
   test:wasm {:doc  "Check libsodium.js (WASM) against the same vectors (needs npm install in test/wasm)"
              :task (shell {:dir "test/wasm"} "nbb" "check.cljs")}
@@ -60,7 +63,7 @@
                :task (do (run 'test:signet-jvm) (run 'test:signet-parity) (run 'test:signet-bb))}
 
   test:all  {:doc  "Every runtime (bb, JVM, nbb, WASM on Node, Scittle in Chromium), library loading, lint and format"
-             :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb) (run 'test:loading) (run 'test:secrets)
+             :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb) (run 'test:loading) (run 'test:secrets) (run 'test:process)
                        (run 'test:wasm) (run 'test:browser) (run 'lint) (run 'fmt))}
 
   test:jar  {:doc  "Install the jar, then run the suite against it from a scratch project (no src/) on the JVM, bb and nbb. Refuses a version already on Clojars."
