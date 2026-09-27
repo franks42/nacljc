@@ -808,6 +808,69 @@
               (throw (ex-info "nacljc: ChaCha20-Poly1305 authentication failed" {:type ::auth-failed})))
             (read-bytes m n)))))))
 
+;; ---------------------------------------------------------------------------
+;; Key wrapping inside guarded memory (0.5.0)
+;; ---------------------------------------------------------------------------
+
+(defn wrap-secret
+  "ChaCha20-Poly1305 (IETF, RFC 8439) of secret s's bytes under key k (a
+   byte array or a secret, 32 bytes), with a 12-byte nonce and associated
+   data aad (nil means none). s is read in place, inside its guarded
+   memory: its bytes never exist on the Clojure heap. Returns ciphertext ||
+   16-byte tag, as a byte array: safe to store or send. The same bytes as
+   chacha20-poly1305-encrypt of s's contents. Never reuse a nonce with the
+   same key.
+   Impure: reads s (and k, when it is a secret).
+   Throws ex-info {:type ::bad-input} unless s is a secret and the other
+   inputs have the right types, {:type ::bad-length} for a key or nonce of
+   the wrong size, {:type ::destroyed-secret} for a destroyed secret, and
+   {:type ::call-failed} if libsodium reports a failure."
+  [k nonce s aad]
+  (when-not (secret? s)
+    (throw-bad-input "wrap-secret plaintext" "a secret (for bytes use chacha20-poly1305-encrypt)" s))
+  (let [k     (check-key k 32 "ChaCha20-Poly1305 key")
+        nonce (check-bytes nonce 12 "ChaCha20-Poly1305 nonce")
+        aad   (check-optional-bytes aad "associated data")
+        n     (+ (.-n s) 16)]
+    (with-open-secrets [k s]
+      (with-scratch [sc]
+        (let [c (alloc! sc n)]
+          (check-rc (-aead-encrypt c ffi/null (.-ptr s) (.-n s) (in! sc aad) (alength aad)
+                                   ffi/null (in! sc nonce) (key-in! sc k))
+                    "crypto_aead_chacha20poly1305_ietf_encrypt")
+          (read-bytes c n))))))
+
+(defn unwrap-secret
+  "Inverse of wrap-secret: decrypts ciphertext ct (at least 17 bytes)
+   straight into a new secret, so the plaintext never exists as a byte
+   array. A wrong key, nonce or aad, or a changed ciphertext, fails
+   authentication, and no secret is left behind.
+   Impure: reads k when it is a secret, and allocates guarded memory for
+   the result (see secret-destroy!).
+   Throws ex-info {:type ::auth-failed} when authentication fails;
+   {:type ::bad-length} for a ciphertext shorter than 17 bytes or a key or
+   nonce of the wrong size; {:type ::bad-input} for an input of the wrong
+   type; {:type ::destroyed-secret} for a destroyed key; and
+   {:type ::call-failed} if sodium_malloc fails."
+  [k nonce ct aad]
+  (let [k     (check-key k 32 "ChaCha20-Poly1305 key")
+        nonce (check-bytes nonce 12 "ChaCha20-Poly1305 nonce")
+        ct    (check-bytes ct "ciphertext")
+        aad   (check-optional-bytes aad "associated data")]
+    (when (< (alength ct) 17) (throw-bad-length "ciphertext" ">= 17" (alength ct)))
+    (let [n (- (alength ct) 16)]
+      ;; it produces a secret even with a byte-array key: always wipe
+      (try
+        (with-open-secrets* 0 [k]
+          (with-scratch [sc]
+            ;; new-secret! frees the memory if fill! throws (a failed tag)
+            (new-secret! n #(when-not (zero? (-aead-decrypt % ffi/null ffi/null (in! sc ct) (alength ct)
+                                                            (in! sc aad) (alength aad) (in! sc nonce)
+                                                            (key-in! sc k)))
+                              (throw (ex-info "nacljc: ChaCha20-Poly1305 authentication failed"
+                                              {:type ::auth-failed}))))))
+        (finally (stackzero! stackzero-bytes))))))
+
 (defn hkdf-sha-256
   "HKDF-SHA-256 (RFC 5869), extract then expand: len bytes (1..8160) from
    input keying material ikm, with salt and info (nil means empty; an empty

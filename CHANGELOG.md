@@ -1,6 +1,19 @@
 # Changelog
 
-## 0.5.0 (unreleased)
+## 0.5.0 (2026-09-27)
+
+### Added
+
+- **Key wrapping inside guarded memory:** `wrap-secret` and
+  `unwrap-secret`. `(wrap-secret k nonce s aad)` encrypts secret `s`'s
+  bytes with ChaCha20-Poly1305, reading them in place, and returns the
+  ciphertext as bytes; `(unwrap-secret k nonce ct aad)` decrypts straight
+  into a new secret. So a secret can be saved to disk and loaded again
+  without its bytes ever existing on the Clojure heap. For signet's vault
+  persistence (signet docs/10). Checked against RFC 8439's vector; a
+  failed authentication (wrong key, nonce, aad, or a changed ciphertext)
+  throws `::auth-failed` and leaves no secret behind; the stack is wiped
+  after both, also when the key is a byte array.
 
 ## 0.4.0 (2026-09-27)
 

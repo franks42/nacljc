@@ -90,7 +90,9 @@
      ;; 0.3.0
      secret-split
      ;; 0.4.0
-     argon2id argon2id-limits})
+     argon2id argon2id-limits
+     ;; 0.5.0
+     wrap-secret unwrap-secret})
 
 (deftest public-api-is-exactly-the-documented-one
   (is (= api (set (keys (ns-publics 'nacljc.core))))
@@ -762,6 +764,77 @@
   (let [[r events] (audited #(na/argon2id (utf8 "correct horse") (b 16 1) 32 {:opslimit 1 :memlimit 8192}))]
     (is (= :no-throw r))
     (is (hygienic? events) (pr-str events))))
+
+;; ---- 0.5.0: key wrapping inside guarded memory ----
+
+(deftest wrap-and-unwrap-match-rfc-8439
+  (let [{:keys [key nonce ad pt ct]} (get-in vectors [:rfc :aead])]
+    (na/with-secret [k (secret-of key)]
+      (na/with-secret [s (na/secret-import! (utf8 pt))]
+        (is (= ct (hex (na/wrap-secret k (unhex nonce) s (unhex ad))))
+            "a secret's bytes, encrypted in place: the RFC ciphertext"))
+      (na/with-secret [out (na/unwrap-secret k (unhex nonce) (unhex ct) (unhex ad))]
+        (is (na/secret? out) "decrypted straight into a new secret")
+        (is (= (hex (utf8 pt)) (hex (reveal out))))))
+    (testing "a byte-array key works too"
+      (na/with-secret [s (na/secret-import! (utf8 pt))]
+        (is (= ct (hex (na/wrap-secret (unhex key) (unhex nonce) s (unhex ad)))))))))
+
+(deftest wrapping-keeps-secret-bytes-off-the-heap
+  (na/with-secret [k (na/secret-random 32)]
+    (na/with-secret [s (na/secret-random 32)]
+      (let [nonce (b 12 1)
+            [r events] (audited #(na/wrap-secret k nonce s nil))]
+        (is (= :no-throw r))
+        (is (hygienic? events) (pr-str events))
+        (is (= 1 (count (filter #(= :stackzero (first %)) events))))
+        (let [ct (na/wrap-secret k nonce s nil)
+              [r2 events2] (audited #(na/secret-destroy! (na/unwrap-secret k nonce ct nil)))]
+          (is (= :no-throw r2))
+          (is (hygienic? events2) (pr-str events2))
+          (is (= [32] (map #(nth % 2) (filter #(= :secret-alloc (first %)) events2)))
+              "the plaintext goes straight into a 32-byte secret")
+          (na/with-secret [back (na/unwrap-secret k nonce ct nil)]
+            (is (na/constant-time-equal? s back) "round trip, compared in place")))))))
+
+(deftest unwrap-with-a-byte-key-still-wipes-the-stack
+  ;; it produces a secret, so it wipes even though it opens none
+  (let [k (b 32 5) nonce (b 12 6)
+        ct (na/with-secret [s (na/secret-random 16)] (na/wrap-secret k nonce s nil))
+        [r events] (audited #(na/secret-destroy! (na/unwrap-secret k nonce ct nil)))]
+    (is (= :no-throw r))
+    (is (= [16384] (map second (filter #(= :stackzero (first %)) events))))))
+
+(deftest unwrap-with-the-wrong-key-fails-and-frees-its-secret
+  (na/with-secret [k (na/secret-random 32)]
+    (na/with-secret [other (na/secret-random 32)]
+      (na/with-secret [s (na/secret-random 32)]
+        (let [nonce (b 12 2)
+              ct    (na/wrap-secret k nonce s (utf8 "aad"))]
+          (doseq [[label f] {"wrong key"   #(na/unwrap-secret other nonce ct (utf8 "aad"))
+                             "wrong nonce" #(na/unwrap-secret k (b 12 3) ct (utf8 "aad"))
+                             "wrong aad"   #(na/unwrap-secret k nonce ct (utf8 "AAD"))
+                             "tampered"    #(na/unwrap-secret k nonce (bytes-from (update (vec (byte-seq ct)) 0 bit-xor 1)) (utf8 "aad"))}]
+            (let [log (atom [])]
+              (binding [na/*audit* log]
+                (is (= :nacljc.core/auth-failed (error-type f)) label))
+              (is (= (count (filter #(= :secret-alloc (first %)) @log))
+                     (count (filter #(= :free (first %)) @log)))
+                  (str label ": the secret allocated for the plaintext was freed")))))))))
+
+(deftest wrap-refuses-bad-input
+  (na/with-secret [k (na/secret-random 32)]
+    (na/with-secret [s (na/secret-random 16)]
+      (is (= [:nacljc.core/bad-input 0] (rejected #(na/wrap-secret k (b 12) (b 16) nil)))
+          "the plaintext must be a secret (use chacha20-poly1305-encrypt for bytes)")
+      (is (= [:nacljc.core/bad-length 0] (rejected #(na/wrap-secret k (b 11) s nil))))
+      (is (= [:nacljc.core/bad-length 0] (rejected #(na/wrap-secret (b 31) (b 12) s nil))))
+      (is (= [:nacljc.core/bad-length 0] (rejected #(na/unwrap-secret k (b 12) (b 16) nil)))
+          "a ciphertext must hold at least one byte besides the tag")
+      (is (= [:nacljc.core/bad-input 0] (rejected #(na/unwrap-secret k (b 12) "ct" nil))))))
+  (let [s (na/secret-random 16)]
+    (na/secret-destroy! s)
+    (is (= :nacljc.core/destroyed-secret (error-type #(na/wrap-secret (b 32) (b 12) s nil))))))
 
 (deftest a-secret-in-use-cannot-be-destroyed
   (let [s (na/secret-random 32)]

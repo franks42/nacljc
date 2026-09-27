@@ -35,7 +35,7 @@ never had, such as HKDF-SHA-256 and IETF ChaCha20-Poly1305. The repo was
 called `sodium.cljc` until 2026-09-23. It was renamed because Clojars'
 `com.degel/sodium` already ships a `sodium.core` namespace.
 
-Status: **0.4.0 released** on Clojars (2026-09-27; see [CHANGELOG.md](CHANGELOG.md)). signet uses it as its libsodium backend.
+Status: **0.5.0 released** on Clojars (2026-09-27; see [CHANGELOG.md](CHANGELOG.md)). signet uses it as its libsodium backend.
 [`docs/feasibility.md`](docs/feasibility.md) has the research findings and
 the evidence.
 
@@ -47,16 +47,16 @@ libsodium`; on Linux see "Requirements", since Debian and Ubuntu ship
 
 ```clojure
 ;; deps.edn (JVM, JDK 25+)
-{:deps    {com.github.franks42/nacljc {:mvn/version "0.4.0"}}
+{:deps    {com.github.franks42/nacljc {:mvn/version "0.5.0"}}
  :aliases {:run {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
 
 ;; bb.edn (babashka 1.13.220+; bb ignores the org.babashka/ffi
 ;; dependency and uses its built-in babashka.ffi)
-{:deps {com.github.franks42/nacljc {:mvn/version "0.4.0"}}}
+{:deps {com.github.franks42/nacljc {:mvn/version "0.5.0"}}}
 
 ;; nbb.edn (nbb 1.6.213+ on Node 26+; nbb resolves :deps through bb,
 ;; so bb must be installed)
-{:deps {com.github.franks42/nacljc {:mvn/version "0.4.0"}}}
+{:deps {com.github.franks42/nacljc {:mvn/version "0.5.0"}}}
 ```
 
 ```clojure
@@ -109,6 +109,8 @@ instead of the Clojure heap:
 | `(secret-destroy! s)` | zeroes and frees it (`sodium_free`); later use throws `::destroyed-secret`; again is a no-op |
 | `(with-secret [s (secret-random 32)] …)` | destroys `s` on exit, also when the body throws |
 | `(secret? x)`, `(secret-length s)`, `(secret-destroyed? s)` | |
+| `(wrap-secret k nonce s aad)` | 0.5.0: ChaCha20-Poly1305 of secret `s`'s bytes, read in place, under key `k`; returns ciphertext ‖ tag as bytes (safe to store). Key wrapping without the heap |
+| `(unwrap-secret k nonce ct aad)` | 0.5.0: decrypts straight into a new secret; `::auth-failed` for a wrong key, nonce, aad or ciphertext, with nothing left behind |
 | `(secret-split s [32 32])` | 0.3.0: new secrets holding consecutive parts of `s` (lengths must add up to its size); copied inside guarded memory; `s` is unchanged |
 
 Every function that takes key material (a seed, a secret key, an AEAD, HMAC
