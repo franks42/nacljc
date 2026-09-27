@@ -286,6 +286,14 @@ clojure -J-Dnacljc.libsodium=/opt/libsodium/lib/libsodium.dylib …  # JVM (bb: 
   - A library that isn't libsodium: `::not-libsodium`.
   - A libsodium older than 1.0.19: `::libsodium-too-old`.
 
+**Security note: whoever sets these chooses the crypto library.**
+`NACLJC_LIBSODIUM` and `-Dnacljc.libsodium` load whatever library they
+name, and every secret then passes through it. Anyone who can change the
+process's environment or command line can point them at a malicious
+library that passes the checks above. Treat them like `LD_PRELOAD`: set
+them only from deployment configuration you control, and do not let
+untrusted input reach the environment of a process that holds secrets.
+
 ## Requirements
 
 All of these are needed to run everything. Each runtime also works on its
