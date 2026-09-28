@@ -1,0 +1,1 @@
+{:config-in-call {nacljc.tty/terminal-flags {:ignore [:unused-private-var :unused-private-var]}}}

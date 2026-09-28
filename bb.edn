@@ -27,6 +27,9 @@
   test:process {:doc  "Opt-in process hardening (nacljc.process) in fresh child processes on bb, the JVM and nbb"
                 :task (shell "bb" "-cp" "test" "-m" "process.run")}
 
+  test:tty {:doc  "Terminal password input (nacljc.tty) in child processes on bb, the JVM and nbb, under a pseudo-terminal (script)"
+            :task (apply shell "bb" "-cp" "test" "-m" "tty.run" *command-line-args*)}
+
   test:wasm {:doc  "Check libsodium.js (WASM) against the same vectors (needs npm install in test/wasm)"
              :task (shell {:dir "test/wasm"} "nbb" "check.cljs")}
 
@@ -63,7 +66,7 @@
                :task (do (run 'test:signet-jvm) (run 'test:signet-parity) (run 'test:signet-bb))}
 
   test:all  {:doc  "Every runtime (bb, JVM, nbb, WASM on Node, Scittle in Chromium), library loading, lint and format"
-             :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb) (run 'test:loading) (run 'test:secrets) (run 'test:process)
+             :task (do (run 'test:bb) (run 'test:jvm) (run 'test:nbb) (run 'test:loading) (run 'test:secrets) (run 'test:process) (run 'test:tty)
                        (run 'test:wasm) (run 'test:browser) (run 'lint) (run 'fmt))}
 
   test:jar  {:doc  "Install the jar, then run the suite against it from a scratch project (no src/) on the JVM, bb and nbb. Refuses a version already on Clojars."

@@ -264,6 +264,34 @@ them:
 - **The machine:** encrypted swap or none, and no hibernation (it writes
   all of memory to disk, guarded pages included).
 
+## Terminal password input (nacljc.tty)
+
+```clojure
+(require '[nacljc.tty :as tty])
+(def pw (tty/read-password "Vault password: "))            ; a secret, never on the heap
+(tty/read-password "New password: " {:confirm "Again: "})  ; read twice, compared in constant time
+(tty/read-password-fd 0)                                   ; stdin as a pipe or file
+```
+
+The terminal's bytes go from `read(2)` into guarded memory; the newline
+and ^C are found there with `memchr`. So the password is never a String
+or a byte array, and no password byte passes through a Clojure value.
+Echo and signals are off during the read (^C ends it with
+`::interrupted` instead of killing the process with echo off); the
+kernel does the line editing (backspace, ^U), and the settings are
+restored afterwards. As with `readpassphrase(3)`, anything typed before
+the prompt is discarded.
+
+- **No terminal** (an editor's REPL, CI, a service): `::no-tty`. Use
+  `read-password-fd`, or have another process ask (an agent).
+- **Killed while reading** (SIGKILL, SIGTERM): echo may stay off; `stty
+  sane` repairs the terminal.
+- **Unicode:** the same password can be typed as different bytes on
+  different systems (é as one code point or two). ASCII passwords or
+  plain-word passphrases avoid that.
+- macOS and Linux (the `termios` layout is per platform), on the JVM, bb
+  and nbb. Up to 1024 bytes (macOS's line limit, `MAX_CANON`).
+
 ## Loading libsodium
 
 libsodium loads when `nacljc.core` loads. Without configuration it is
@@ -324,6 +352,8 @@ bb test:jvm       # vector tests on JVM Clojure (JDK 25+)
 bb test:nbb       # vector tests on nbb (Node 26+)
 bb test:loading   # library loading in fresh processes, on bb, nbb and the JVM
 bb test:secrets   # secret memory faults outside calls and after destroy (child processes, all runtimes)
+bb test:process   # opt-in process hardening in child processes (all runtimes)
+bb test:tty       # terminal password input under a pseudo-terminal (script), all runtimes
 bb test:wasm      # libsodium.js on Node        (first: cd test/wasm && npm install)
 bb test:browser   # Scittle + libsodium.js in headless Chromium
                   # (first: cd test/browser && npm install; optional arg = a libsodium.js build URL or path)
@@ -357,12 +387,14 @@ Scittle and libsodium.js.
 ```
 src/nacljc/core.cljc          the binding (API above): checks, scratch arenas, wiping
 src/nacljc/process.cljc       opt-in process hardening (libc: setrlimit, prctl)
+src/nacljc/tty.cljc           terminal password input into guarded memory (libc: termios, read, memchr)
 test/nacljc/vectors.edn       RFC vectors + cross-platform vectors
 test/nacljc/core_test.cljc    known answers, typed errors, hygiene audit (JVM, bb, nbb)
 test/nacljc/process_test.cljc nacljc.process checks that change nothing
 test/loading/run.clj          library-loading checks, driving test/loading/child.cljc
 test/secrets/run.clj          secret memory faults, driving test/secrets/child.cljc
 test/process/run.clj          hardening applied, driving test/process/child.cljc
+test/tty/run.clj              terminal input under a pseudo-terminal, driving test/tty/child.cljc
 test/nacljc/jca_crosscheck.clj  libsodium vs signet's JCA on random inputs
 test/wasm/check.cljs          libsodium.js on Node against the same vectors
 test/browser/index.html       Scittle page doing the same in a browser

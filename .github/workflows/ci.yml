@@ -93,6 +93,8 @@ jobs:
         run: bb test:secrets
       - name: Opt-in process hardening in child processes (bb, nbb, JVM)
         run: bb test:process
+      - name: Terminal password input (nacljc.tty)
+        run: bb test:tty
 
       - name: libsodium.js (WASM) on Node
         run: |
@@ -171,6 +173,8 @@ jobs:
         run: bb test:secrets
       - name: Opt-in process hardening in child processes (bb, nbb, JVM)
         run: bb test:process
+      - name: Terminal password input (nacljc.tty)
+        run: bb test:tty
       - name: Suite against the installed jar (JVM, bb, nbb)
         run: bb test:jar
 

@@ -2,6 +2,23 @@
 
 ## 0.6.0 (unreleased)
 
+### Added
+
+- **`nacljc.tty`: read a password straight into guarded memory.**
+  `(read-password "Password: ")` opens `/dev/tty`, switches off echo and
+  signals (so ^C is a byte, not a kill with echo left off), and reads the
+  line with `read(2)` directly into `sodium_malloc` memory; the newline
+  and ^C are found there with `memchr`, so the password never exists as a
+  String, a byte array, or a byte in a Clojure value. Returns a secret of
+  the exact length. `{:confirm "Again: "}` reads twice and compares in
+  constant time. `read-password-fd` does the same for a pipe or file
+  (stdin, systemd credentials). Typeahead before the prompt is discarded,
+  as `readpassphrase(3)` does. Typed errors: `::no-tty`,
+  `::interrupted`, `::empty`, `::too-long`, `::mismatch`. macOS and
+  Linux, on the JVM, bb and nbb. Checked by `bb test:tty` (a
+  pseudo-terminal via `script(1)`: no echo, settings restored,
+  backspace, UTF-8, ^C, confirmation), in CI.
+
 ## 0.5.0 (2026-09-27)
 
 ### Added
