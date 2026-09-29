@@ -11,7 +11,7 @@ Public repo: https://github.com/franks42/nacljc.
   `bb test:clojars X.Y.Z` against the jar fetched back from Clojars.
 - **0.3.2 (released 2026-09-26):** review fixes (X-Wing 64 KiB stack wipe,
   exception-preserving cleanup, purity/throws docstrings everywhere,
-  `test:signet` on signet's own suite). **main is 0.6.0-SNAPSHOT:** `nacljc.tty` (terminal password
+  `test:signet` on signet's own suite). **0.6.0 (released 2026-09-28):** `nacljc.tty` (terminal password
   input straight into guarded memory; signet docs/11 part 2; `bb test:tty`
   drives a pseudo-terminal with script(1), in CI). **0.5.0 (released 2026-09-27):** `wrap-secret` / `unwrap-secret` (key wrapping in guarded memory, for signet docs/10). **0.4.0 (released 2026-09-27):** `constant-time-equal?` over secrets,
   `nacljc.process` (opt-in hardening; its own namespace so `nacljc.core`
