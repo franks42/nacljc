@@ -1,51 +1,74 @@
 # nacljc — project guide
 
 libsodium for Clojure on the JVM, babashka and nbb (babashka.ffi), with
-libsodium.js (WASM) tested for the browser. Started 2026-09-23 as a research
-repo; being prepared for its first Clojars release, 0.1.0.
-Public repo: https://github.com/franks42/nacljc.
-- CI: `.github/workflows/ci.yml` (lint, macOS, Linux). Every job calls bb
-  tasks only.
-- Releases: a `vX.Y.Z` tag triggers `release.yml`. It runs
-  `bb release-check` and the tests, deploys to Clojars, then runs
-  `bb test:clojars X.Y.Z` against the jar fetched back from Clojars.
-- **0.3.2 (released 2026-09-26):** review fixes (X-Wing 64 KiB stack wipe,
-  exception-preserving cleanup, purity/throws docstrings everywhere,
-  `test:signet` on signet's own suite). **0.6.0 (released 2026-09-28):** `nacljc.tty` (terminal password
-  input straight into guarded memory; signet docs/11 part 2; `bb test:tty`
-  drives a pseudo-terminal with script(1), in CI). **0.5.0 (released 2026-09-27):** `wrap-secret` / `unwrap-secret` (key wrapping in guarded memory, for signet docs/10). **0.4.0 (released 2026-09-27):** `constant-time-equal?` over secrets,
-  `nacljc.process` (opt-in hardening; its own namespace so `nacljc.core`
-  stays libsodium-only), and Argon2id (`argon2id`, `argon2id-limits`;
-  secret password in, secret key out) for signet's password unlocking.
-- **Decisions (2026-09-27):**
-  - **Old libsodium (Ubuntu/Debian 1.0.18): back burner.** No CI job for
-    it for now; distributions will catch up. The load-time version check
-    still refuses a too-old libsodium loudly (`::libsodium-too-old`),
-    it is just not proven in CI.
-  - **Process hardening is opt-in, never automatic.** Loading nacljc or
-    signet changes no process settings. A helper (e.g. `harden-process!`
-    with options such as `{:core-dumps false :dumpable false}`) does it
-    only when a deployment calls it; the README documents each option
-    with its trade-off (core dumps and `PR_SET_DUMPABLE` help security but
-    hurt debugging and profiling). It is a deployment choice. It lives in
-    nacljc as the separate namespace `nacljc.process` (decided 2026-09-27).
+libsodium.js (WASM) tested for the browser. Public repo:
+https://github.com/franks42/nacljc. Namespaces: `nacljc.core` (the
+libsodium binding: the C boundary), `nacljc.process` (opt-in process
+hardening, libc), `nacljc.tty` (terminal password input into guarded
+memory, libc).
+
+## Current state (2026-09-28)
+
+**Released: 0.6.0 (2026-09-28). main is 0.7.0-SNAPSHOT** (CHANGELOG has an
+empty `## 0.7.0 (unreleased)`). CI green (lint, macOS, Linux). signet
+0.10.0 depends on nacljc 0.6.0.
+
+Releases (details in CHANGELOG.md):
+- **0.6.0:** `nacljc.tty`: `read-password` (/dev/tty, ECHO and ISIG off,
+  canonical mode, `read(2)` into sodium_malloc memory, newline and ^C
+  found with `memchr`; `{:confirm …}`), `read-password-fd`. `bb test:tty`
+  drives a pseudo-terminal with script(1) on bb, the JVM and nbb (12
+  checks each; verified on macOS and Linux CI). termios c_lflag is read as
+  a 32-bit :int at offset 24 (macOS) / 12 (Linux), little-endian.
+- **0.5.0:** `wrap-secret` / `unwrap-secret` (key wrapping in guarded
+  memory; signet's vault files).
+- **0.4.0:** `constant-time-equal?` over secrets, `nacljc.process`
+  (opt-in hardening), Argon2id (`argon2id`, `argon2id-limits`).
+- **0.3.x:** `secret-split`, secret HKDF salt (0.3.0); `sodium_stackzero`
+  after every secret operation (0.3.1); review fixes and purity/throws
+  docstrings everywhere (0.3.2).
+- **0.2.0:** secrets in guarded memory (`secret-*`), AEGIS-256, X-Wing.
+- **0.1.0:** first Clojars release.
+
+### Possible next steps (none chosen; ask the user)
+
+- Whatever signet needs next (signet's CLAUDE.md lists its candidates).
+  Candidates here: pinentry support (a GUI prompt answering over a pipe,
+  read into a secret like `read-password-fd`), peer-credential checks
+  (`SO_PEERCRED` / `getpeereid`) for signet's agent (docs/12 in signet;
+  the agent is on the back burner).
+- **Back burner:** CI for libsodium < 1.0.19 (Ubuntu/Debian 1.0.18).
+
+### Workflow
+
+- Commit and push only when asked. Bugs: failing-first test; every guard
+  injection-checked.
+- Release: set build.clj's version and `## X.Y.Z (YYYY-MM-DD)` in the
+  CHANGELOG; `bb release-check`, `bb test:jar`; commit "Release X.Y.Z",
+  push, wait for CI; tag `vX.Y.Z` (release.yml: tests, deploy, `bb
+  test:clojars X.Y.Z`, GitHub release); then bump build.clj to the next
+  -SNAPSHOT and add an unreleased CHANGELOG heading. `bb
+  check-not-released` (in test:jar) refuses a released version.
+- No Docker locally: Linux-only behavior is verified in CI.
+
+### Decisions (2026-09-27)
+
+- **Old libsodium (Ubuntu/Debian 1.0.18): back burner.** No CI job for it
+  for now; the load-time version check still refuses a too-old libsodium
+  loudly (`::libsodium-too-old`).
+- **Process hardening is opt-in, never automatic** (`nacljc.process`,
+  its own namespace). Loading nacljc or signet changes no process
+  settings; the README documents each option and its trade-off. A
+  deployment choice.
+
+### Rules
+
 - **Docstrings:** every function, public and private, states its purity in
   its first paragraph: `Pure.`, or `Impure: <what it reads or writes>`, or
   for key-taking functions "Pure for byte-array keys; with a secret,
   impure: reads it". Then `Throws ex-info {:type ::x} when …` with every
   `:type` (or `Never throws`). Scratch native memory allocated and wiped
   within a call does not count as state.
-- **0.3.1 (released 2026-09-25):** `sodium_stackzero` (16 KiB) after every
-  operation that reads a secret, in `with-open-secrets`; signet 0.9.1 uses it.
-- **0.3.0 (released 2026-09-25):** `secret-split` and a secret HKDF salt,
-  for signet 0.9.0's sessions on vault handles (signet docs/08, phase 1).
-- **0.2.0 (released 2026-09-24):** secrets in guarded memory (`secret-*`,
-  `with-secret`; no-access outside calls, a counter under a lock for
-  threads), AEGIS-256, X-Wing (bound only if libsodium >= 1.0.22). Secret
-  inputs give secret key outputs. `bb test:secrets` proves the fault (on
-  the JVM a read after destroy crashes the process: use after free).
-  **After every release, bump build.clj to the next -SNAPSHOT**;
-  `bb check-not-released` (in test:jar) refuses a released version.
 - **Hard rule: this ns is the C boundary.** Read the README's "Memory and
   type safety" section and follow the hardening rules below for any change.
 
@@ -125,7 +148,7 @@ Read `docs/feasibility.md` first: findings, evidence, risks, next steps.
 - clj-kondo: the `defcfn` hooks are imported into `.clj-kondo/imports`.
   `with-scratch` lints as `fn`, and promesa's `p/let` as `let`.
 
-## Next steps (from the feasibility doc)
+## Earlier roadmap (from the feasibility doc; items 2–4 still open)
 
 1. ~~libsodium backend behind signet's `signet.impl.jvm` functions~~ Done,
    and moved into signet as `signet.impl.sodium` + the `signet.impl`
