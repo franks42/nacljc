@@ -297,6 +297,43 @@ minimum for Ed25519 and X25519 in PIV; 5.8 adds `previewSign` and FIDO over
 the smart card interface. YubiKey firmware cannot be updated after
 purchase **[source: Yubico]**.
 
+## X25519 key agreement: the shared secret comes back
+
+Updated 2026-10-05. Signing returns a public value; key agreement does
+not. Every device below keeps the long-term private key but returns the
+shared secret to the host.
+
+| Device | X25519 | What comes back |
+|---|---|---|
+| YubiKey PIV (fw ≥ 5.7, alg `0xE1`) | yes | the raw 32-byte shared secret. `calculate_secret` sends the peer's raw public key with the key-agreement (exponentiation) tag and returns the result as bytes **[verified: `yubikit/piv.py`]** |
+| AWS KMS `DeriveSharedSecret` | **no**: NIST curves and SM2 (China Regions) only | the raw shared secret in the HTTPS response; AWS recommends a NIST SP 800-56C KDF before use **[source: KMS API reference]** |
+| YubiHSM 2 | no: ECDH on NIST, secp256k1 and brainpool curves only **[source: YubiHSM 2 specs]** | the shared secret |
+| Full PKCS#11 HSMs (CloudHSM, Luna, …) | varies | `C_DeriveKey` can keep the result as a non-extractable key object inside the HSM **[inference]**. Only useful if HKDF and the AEAD also run in the HSM, which Noise's chaining-key logic does not |
+| `ykcs11` (`CKM_ECDH1_DERIVE`) | via the YubiKey | a "derived key object" that lives in the PKCS#11 module's host memory, since the YubiKey returns the secret **[inference]** |
+
+**KMS exception: Nitro.** With the `Recipient` parameter, called from a
+Nitro Enclave or NitroTPM, `DeriveSharedSecret` returns the secret
+encrypted to the enclave's attested public key (`CiphertextForRecipient`)
+instead of in plaintext **[source: KMS API reference]**. As far as we know
+`Decrypt` and `GenerateDataKey` offer the same option **[inference]**. It
+is the only mechanism we know of that keeps a KMS secret from being
+plaintext outside the requester, at the price of running in Nitro.
+
+Consequences for signet **[inference]**:
+
+- The X25519 private key can live on the YubiKey (its own slot; no
+  token derives X25519 from its Ed25519 key, so a hardware identity needs
+  two keys and a signed binding between the two kids).
+- Each DH output is a host-side secret. It should go straight into a
+  nacljc secret; HKDF, the Noise chaining key, ephemerals and the AEAD
+  stay in guarded memory as today.
+- To keep it off the Clojure heap entirely, the YubiKey path needs a
+  native-buffer-to-secret import (the result arrives in a native buffer
+  when the card is driven through `babashka.ffi`). Through an HTTP or
+  Python route it cannot be kept off a heap.
+- A KMS-backed identity is signing-only. Its encryption key lives on a
+  YubiKey or in the `:sodium` vault, certified by the KMS signing key.
+
 ## Open points
 
 - Measure the YubiKey's real Ed25519 message limit: sign 1, 2, 3 and 4 KB
