@@ -118,24 +118,92 @@ The cost is that security now rests on the hash's collision resistance
 recompute the digest. Existing signet envelopes keep verifying under v1
 rules.
 
-## Proposal for nacljc
+## Design direction (implementation placement still open)
 
-The secret here is only the seed. The message, the digest and the frame
-are public, so guarded memory adds nothing for them; what matters is that
-the seed never leaves it, which `ed25519-sign` already guarantees. The
-value of a nacljc function is a single, tested definition of the frame
-that every caller and every backend shares.
+Updated 2026-10-05. Where the code lives, nacljc or signet, is still up
+for discussion. The behaviour below is the agreed direction.
 
-Two layers, so that signet can route the frame to a hardware signer:
+### Callers never choose between "hashed" and "raw"
+
+An application signs a message and verifies a signature. It does not pick
+a mode, pass a digest, or know about frames. The signing path always uses
+the framed digest (option B); verification works out which rule applies
+from a version carried with the signature.
+
+That requires something to carry the version, so the transparent API
+lives where there is an envelope:
+
+- **signet's envelope gets a version inside the signed data**, for
+  example `{:v 2 :message … :signer … :request-id …}`, and the frame
+  carries its own marker (`:signet/sig 2`, or the binary magic below).
+  The version is authenticated, not just a label.
+- **`verify-edn` dispatches on it.** v2: recompute the frame from the
+  canonical envelope and verify; no version: the v1 rule (pure Ed25519
+  over the canonical envelope). The caller sees the same `{:valid? …}`
+  either way.
+- **No downgrade or cross-verification** **[inference]**. A v2 signature
+  covers a frame; a v1 signature covers an envelope map that must contain
+  `:message`, `:signer` and `:request-id`. Neither byte string can be the
+  other, so relabelling an envelope gets an attacker nothing. A minimum
+  version option (`{:min-v 2}`) lets a deployment stop accepting v1 once
+  old envelopes have expired.
+- **Every signing context gets a namespace**: `:envelope`,
+  `:chain-block`, `:chain-seal` (today it signs a raw 64-byte value),
+  `:external`. No public path signs unframed bytes.
+- **Raw `ed25519-sign` stays as it is.** Its contract is libsodium's
+  `crypto_sign_detached`: the RFC 8032 vectors, byte-for-byte parity with
+  the JCA backend, and the reference that hardware signatures are checked
+  against. A bare 64-byte signature has nowhere to carry a version, so a
+  raw signer that silently hashed could not be verified transparently. It
+  becomes an internal building block rather than an application API.
+
+### One call: hash, frame and sign together
+
+The signing entry point takes the **message**, not a digest, and computes
+the digest, the frame and the signature itself, in one call. Splitting it
+into "hash" then "sign" opens a gap: whoever sits between the two calls
+can hand the signer a digest that is not the hash of the message that was
+shown, logged or checked. With a single call the signer only ever signs
+the hash it computed itself.
+
+What this does and does not protect against **[inference]**:
+
+- **It closes digest substitution** by bugs, by misuse, and by any layer
+  between hashing and signing, and it means the key can never be used to
+  sign an arbitrary caller-supplied digest or frame.
+- **It does not stop a caller that controls the whole call.** Code that can
+  call `sign` can choose any message. Inside one process the boundary is
+  the API, not memory protection.
+- **It matters most across a trust boundary.** When the signer is a
+  separate component (signet's agent, a vault process, a policy check in
+  front of the key), receiving the full message lets that component
+  inspect, log or refuse what it actually signs. A digest would make it a
+  blind oracle.
+- **Guarded memory is for the seed, not the message.** The message, the
+  digest and the frame are public; copying the message into
+  `sodium_malloc` memory adds no secrecy. What a single native call does
+  add is that hashing, framing and signing happen in one place with no
+  Clojure-side value in between to tamper with.
+
+For hardware keys the same rule applies one level up. A YubiKey or KMS
+cannot hash a large message itself (that is the whole problem), so the
+host must build the frame. The boundary is therefore the **vault
+provider**: `vault/sign` takes the message; the `:sodium` provider does
+hash, frame and sign in one nacljc call; a `:yubikey-piv` or `:aws-kms`
+provider hashes and frames inside the provider and sends only the frame to
+the device. Nothing above the provider ever handles a digest.
+
+### Building blocks (placement open)
+
+Whichever library ends up owning the policy, these pieces are needed:
 
 ```clojure
-;; 1. The frame: public bytes, no key. Any backend signs these.
-(na/hashed-frame msg {:ns "signet/envelope"})          ; => byte[] (~100 bytes)
+;; message in, signature out: hash + frame + sign in one native call
+(sign-message seed-or-secret msg {:ns :envelope})          ; => signature 64
+(verify-message? pk msg sig {:ns :envelope})               ; => boolean, never throws
 
-;; 2. Convenience for the in-process path: frame + sign in one call,
-;;    seed from a byte array or a secret.
-(na/ed25519-sign-hashed seed msg {:ns "signet/envelope"})   ; => signature 64
-(na/ed25519-verify-hashed? pk msg sig {:ns "signet/envelope"}) ; => boolean, never throws
+;; for hardware providers only: the frame a device signs
+(message-frame msg {:ns :envelope})                        ; => public bytes, ~100
 ```
 
 A frame in the SSHSIG style, binary so non-Clojure verifiers can
@@ -148,17 +216,18 @@ u8  hash id            1 = BLAKE2b-512 (crypto_generichash, 64-byte output)
 64 bytes               H(msg)
 ```
 
-Needs in `nacljc.core`: a binding for `crypto_generichash` (BLAKE2b) and,
-optionally, `crypto_hash_sha512`. Both are plain public-data functions.
+An EDN frame (`{:signet/sig 2 :ns … :hash :blake2b-512 :digest …}`,
+canonical via cedn) is the alternative if the frame lives in signet. The
+binary form is easier for other languages; the EDN form keeps signet
+EDN-native. Undecided.
 
-Separately, an exact **minisign-compatible** pair (`ed25519(BLAKE2b-512(file))`,
-no frame) could be offered for signing files that minisign tools should
-verify. It has no namespace, so it should not be used for signet's
+Needed in `nacljc.core` either way: a `crypto_generichash` (BLAKE2b)
+binding and, optionally, `crypto_hash_sha512`.
+
+Separately, an exact **minisign-compatible** pair
+(`ed25519(BLAKE2b-512(file))`, no frame) could sign files for minisign
+tools. It has no namespace, so it must not be used for signet's
 envelopes.
-
-signet would then sign `(hashed-frame (cedn/canonical-bytes envelope)
-{:ns "signet/envelope"})`, with its own namespaces for chain blocks, the
-chain seal and external blocks, and mark such envelopes as v2.
 
 ## Open points
 
@@ -168,6 +237,9 @@ chain seal and external blocks, and mark such envelopes as v2.
 - Confirm that KMS's Ed25519 digest message type is Ed25519ph (we only use
   the raw type in option B).
 - secp256k1 needs none of this: it already pre-hashes with SHA-256.
+- Where the policy lives: nacljc (frame and one-call signing as
+  primitives) or signet (versioned envelopes, vault providers), and
+  binary versus EDN frame.
 
 ## Sources
 
