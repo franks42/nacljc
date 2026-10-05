@@ -229,6 +229,74 @@ Separately, an exact **minisign-compatible** pair
 tools. It has no namespace, so it must not be used for signet's
 envelopes.
 
+## Getting KMS secrets into guarded memory
+
+Updated 2026-10-05. Signing with KMS returns only public data (a
+signature). Two KMS calls do return secrets: `GenerateDataKey` and
+`Decrypt` hand back a plaintext data key, base64 inside a JSON response
+over HTTPS **[source: AWS KMS API]**. In a JVM or bb client that key
+passes through the HTTP client, the TLS buffers and the JSON parser as
+heap Strings and arrays before it can be imported into a nacljc secret
+**[inference]**. nacljc cannot fix that; it is a property of the API.
+
+### A separate KMS proxy process
+
+Run the KMS client in its own small process and hand results to the
+application over a Unix socket or a pipe.
+
+What it buys **[inference]**:
+
+- **Credential isolation.** Only the proxy holds IAM credentials. A
+  compromised application can ask the proxy for the operations it
+  allows, but cannot call KMS directly, use other keys or take the
+  credentials away.
+- **A small trusted base.** One purpose, a tiny HTTP/JSON path, plaintext
+  held briefly, its own OS user (other processes of the application's
+  user cannot `ptrace` it or read `/proc/<pid>/mem`), no core dumps,
+  `nacljc.process` hardening.
+- **A direct path into guarded memory.** On the application side the
+  secret is `read(2)` from the socket straight into `sodium_malloc`
+  memory, as `nacljc.tty/read-password-fd` already does for passwords.
+  Needed: a general "read exactly n bytes from an fd into a secret"
+  function, and a peer-credential check on the socket (`SO_PEERCRED` on
+  Linux, `getpeereid` on macOS), both already candidates in this repo.
+
+What it does not fix: the plaintext still crosses the proxy's TLS
+buffers, HTTP client and JSON parser. AWS SDKs do not zeroise response
+buffers in any language we know of **[inference]**. Writing the proxy in
+Go or Rust narrows the exposure compared with the JVM; it does not
+remove it. The exposure moves into a small, hardened process; it does
+not disappear.
+
+### Better: do not get secrets back from KMS
+
+Use KMS for operations whose output is public: `Sign` (Ed25519 over the
+framed digest, or secp256k1 over a SHA-256 digest). Nothing sensitive
+then crosses the HTTPS response, and the proxy becomes a
+credential-isolating signing proxy, which is signet's agent design
+(signet `docs/12`) with a KMS vault provider behind it.
+
+Keep `Decrypt` / `GenerateDataKey` for the one case that needs a secret
+back: unlocking a vault file when a process starts. One short exposure
+per start, in the proxy, is an acceptable cost there.
+
+### Two kinds of "separate account"
+
+- **A separate OS user** for the proxy gives memory isolation from the
+  application.
+- **A separate AWS account** holding the KMS key, used through a
+  cross-account key policy, limits the damage if the main account is
+  compromised and gives the key its own CloudTrail log.
+
+They are independent and can be combined.
+
+### Hardware note
+
+For YubiKey experiments use firmware **5.8** (`ykman info`): 5.7 is the
+minimum for Ed25519 and X25519 in PIV; 5.8 adds `previewSign` and FIDO over
+the smart card interface. YubiKey firmware cannot be updated after
+purchase **[source: Yubico]**.
+
 ## Open points
 
 - Measure the YubiKey's real Ed25519 message limit: sign 1, 2, 3 and 4 KB
@@ -240,6 +308,8 @@ envelopes.
 - Where the policy lives: nacljc (frame and one-call signing as
   primitives) or signet (versioned envelopes, vault providers), and
   binary versus EDN frame.
+- A KMS proxy: language, socket protocol, and whether it is signet's
+  agent with a KMS provider or a separate program.
 
 ## Sources
 
